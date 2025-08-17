@@ -4,3 +4,9 @@
 /compile_commands.json
 
 /imgui.ini
+/build/
+/compile_commands.json
+/imgui.ini
+/.cache/
+
+*.swp
