@@ -1,17 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
-project(ray_gui LANGUAGES C CXX)
+
+project(ray_gui LANGUAGES C CXX CUDA)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_ARCHITECTURES 75)
 
-# Enable C language for GLAD
 enable_language(C)
 
-# Find packages first
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
 find_package(glfw3 3.3 REQUIRED)
 find_package(OpenGL REQUIRED)
 
-# Include directories
-include_directories(inc)
 
 # ---------- GLAD ----------
 add_library(glad STATIC extern/glad/src/gl.c)
@@ -28,7 +30,12 @@ target_include_directories(imgui PUBLIC extern/imgui extern/imgui/backends)
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
 
 # ---------- Executable ----------
-add_executable(main main.cpp)
+add_executable(main
+    src/main.cpp
+    src/cuda_renderer.cu
+)
+
+target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/inc)
 
 # Link libraries with proper order
 target_link_libraries(main PRIVATE

@@ -29,6 +29,47 @@
 #include "sphere.hpp"
 #include "vec3.hpp"
 
+#include "cuda/vec.cuh"
+#include "cuda_structs.hpp"
+
+extern "C" void launch_render(vec3_gpu* frame_buffer, int width, int height);
+
+void render_with_cuda(std::vector<unsigned char>& buffer, int width,
+                      int height) {
+  printf("CPU: Starting CUDA render %dx%d\n", width, height);
+
+  // Use CUDA GPU type to match kernel expectations
+  std::vector<vec3_gpu> frame_buffer(width * height);
+
+  // Initialize frame buffer to avoid garbage data
+  for (auto& pixel : frame_buffer) {
+    pixel = vec3_gpu(0.0f, 0.0f, 0.0f);
+  }
+
+  printf("CPU: Allocated frame buffer of size %zu\n", frame_buffer.size());
+
+  // Call CUDA kernel
+  launch_render(frame_buffer.data(), width, height);
+
+  printf("CPU: CUDA render returned, converting to RGB buffer\n");
+
+  // Convert vec3_gpu frame_buffer (0–1) → unsigned char (0–255)
+  buffer.resize(width * height * 3);
+
+  for (size_t i = 0; i < frame_buffer.size(); i++) {
+    // Clamp values to [0, 1] range before conversion
+    float r = fminf(fmaxf(frame_buffer[i].x(), 0.0f), 1.0f);
+    float g = fminf(fmaxf(frame_buffer[i].y(), 0.0f), 1.0f);
+    float b = fminf(fmaxf(frame_buffer[i].z(), 0.0f), 1.0f);
+
+    buffer[i * 3 + 0] = static_cast<unsigned char>(255.99f * r);
+    buffer[i * 3 + 1] = static_cast<unsigned char>(255.99f * g);
+    buffer[i * 3 + 2] = static_cast<unsigned char>(255.99f * b);
+  }
+
+  printf("CPU: Conversion complete\n");
+}
+
 static void glfw_error_callback(int error, const char* description) {
   fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
@@ -278,6 +319,8 @@ public:
 
     render_start_time = std::chrono::steady_clock::now();
 
+    // Forward-declared from cuda_renderer.cu
+
     render_thread = std::thread([this]() {
       try {
         std::cout << "Starting render: " << current_image_width.load() << "x"
@@ -285,9 +328,13 @@ public:
                   << cam.samples_per_pixel << " samples" << std::endl;
 
         // Render with progress tracking and periodic texture updates
-        cam.render_to_buffer_with_progress(world, image_buffer, buffer_mutex,
-                                           render_progress, should_stop_render,
-                                           texture_needs_update);
+        // cam.render_to_buffer_with_progress(world, image_buffer, buffer_mutex,
+        //                                    render_progress,
+        //                                    should_stop_render,
+        //                                    texture_needs_update);
+
+        render_with_cuda(image_buffer, current_image_width.load(),
+                         current_image_height.load());
 
         if (!should_stop_render.load()) {
           render_progress.store(1.0f);

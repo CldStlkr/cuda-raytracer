@@ -31,6 +31,8 @@ public:
     return true;
   }
 
+  color get_albedo() const { return albedo; }
+
 private:
   color albedo;
 };
@@ -48,6 +50,9 @@ public:
     attenuation = albedo;
     return (dot(scattered.direction(), rec.normal) > 0);
   }
+
+  color get_albedo() const { return albedo; }
+  double get_fuzz() const { return fuzz; }
 
 private:
   color albedo;
@@ -81,6 +86,8 @@ public:
 
     return true;
   }
+
+  double get_refraction_index() const { return refraction_index; }
 
 private:
   // Refractive index in vacuum or air, or the ratio of the material's
