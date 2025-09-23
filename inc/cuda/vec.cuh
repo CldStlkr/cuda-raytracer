@@ -1,4 +1,4 @@
-#ifndef VEC3_CUD_H
+f I #ifndef VEC3_CUD_H
 #define VEC3_CUD_H
 #include <cuda_runtime.h>
 #include <math.h>
@@ -41,7 +41,7 @@ public:
 using point3_gpu = vec3_gpu;
 using color_gpu = vec3_gpu;
 
-// Utility functions
+// Utility functions:
 __host__ __device__ inline vec3_gpu operator+(const vec3_gpu& u,
                                               const vec3_gpu& v) {
   return vec3_gpu(u.e[0] + v.e[0], u.e[1] + v.e[1], u.e[2] + v.e[2]);
