@@ -2,8 +2,21 @@
 #include "cuda/ray.cuh"
 #include "cuda/sphere.cuh"
 #include "cuda/vec.cuh"
+
 #include <cuda_runtime.h>
+#include <curand_kernel.h>
+
 #include <stdio.h>
+
+__global__ void render_init(int max_x, int max_y, curandState* rand_state) {
+  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  int j = threadIdx.y + blockIdx.y * blockDim.y;
+  if ((i >= max_x) || (j >= max_y)) return;
+  int pixel_index = j * max_x + i;
+
+  // Each thread gets same seed, different sequence number, no offset
+  curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
+}
 
 #define CUDA_CHECK(call)                                                       \
   do {                                                                         \
@@ -43,8 +56,10 @@ __global__ void render_kernel(vec3_gpu* frame_buffer, int width, int height,
   if (pixel_index >= width * height) return;
 
   // Center the UV coordinates properly
-  float u = (float(i) + 0.5f) / float(width);
-  float v = (float(j) + 0.5f) / float(height);
+  // Normalized coordinates (0..1) are wrong for get_ray which expects pixel
+  // coordinates
+  float u = float(i) + 0.5f;
+  float v = float(j) + 0.5f;
 
   ray_gpu r = cam.get_ray(u, v);
   vec3_gpu col = ray_color(r, spheres, num_spheres);
@@ -53,7 +68,7 @@ __global__ void render_kernel(vec3_gpu* frame_buffer, int width, int height,
 
   // In your render kernel, add this for the center pixel only:
   if (i == width / 2 && j == height / 2) {
-    ray_gpu center_ray = cam.get_ray(0.5f, 0.5f);
+    ray_gpu center_ray = cam.get_ray(float(width) / 2.0f, float(height) / 2.0f);
     vec3_gpu dir = center_ray.direction();
     printf("Center ray direction: (%.6f, %.6f, %.6f)\n", dir.x(), dir.y(),
            dir.z());
@@ -66,9 +81,8 @@ __global__ void render_kernel(vec3_gpu* frame_buffer, int width, int height,
 extern "C" void launch_render(vec3_gpu* frame_buffer, int width, int height) {
   printf("CUDA: Starting render %dx%d\n", width, height);
 
-  // Put sphere right where the center ray is pointing
-  // sphere_gpu h_sphere(vec3_gpu(-7.8f, 4.4f, -4.4f), 0.05f);
-  sphere_gpu h_sphere(vec3_gpu(0.0f, 0.0f, -1.8f), 2.0f);
+  // Put sphere in front of the camera (z = -5.0)
+  sphere_gpu h_sphere(vec3_gpu(0.0f, 0.0f, -5.0f), 1.0f);
 
   printf("CUDA: Created sphere at (%.2f, %.2f, %.2f) with radius %.2f\n",
          h_sphere.get_center().x(), h_sphere.get_center().y(),
@@ -84,10 +98,6 @@ extern "C" void launch_render(vec3_gpu* frame_buffer, int width, int height) {
   }
 
   sphere_gpu* d_spheres;
-
-  printf("CUDA: Created sphere at (%.2f, %.2f, %.2f) with radius %.2f\n",
-         h_sphere.get_center().x(), h_sphere.get_center().y(),
-         h_sphere.get_center().z(), h_sphere.get_radius());
 
   CUDA_CHECK(cudaMalloc(&d_spheres, sizeof(sphere_gpu)));
   CUDA_CHECK(cudaMemcpy(d_spheres, &h_sphere, sizeof(sphere_gpu),

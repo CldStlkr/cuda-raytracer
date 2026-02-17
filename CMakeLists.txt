@@ -8,12 +8,15 @@ set(CMAKE_CUDA_ARCHITECTURES 75)
 
 enable_language(C)
 
-set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(glfw3 3.3 REQUIRED)
 find_package(OpenGL REQUIRED)
 
+
+find_package(CUDAToolkit REQUIRED)
 
 # ---------- GLAD ----------
 add_library(glad STATIC extern/glad/src/gl.c)
@@ -43,11 +46,12 @@ target_link_libraries(main PRIVATE
     glad
     glfw
     OpenGL::GL
+    CUDA::cudart
 )
 
 # Compiler-specific options
 if(MSVC)
   target_compile_options(main PRIVATE /W4)
 else()
-  target_compile_options(main PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(main PRIVATE -Wall -Wextra)
 endif()

@@ -1,3 +1,44 @@
 CompileFlags:
-  Add: [--cuda-path=/usr/local/cuda, --cuda-gpu-arch=sm_75]
+  Add:
+    - --cuda-path=/usr/local/cuda
+    - --cuda-gpu-arch=sm_75
+    - --cuda-host-only
+    - -x
+    - cuda
+    - -std=c++20
+    - -I/usr/local/cuda/include
+    - -I/home/neel/Dev/personal/cuda-raytracer/inc
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - --generate-code*
+    - --expt-*
+    - -std=c23
+    - -std=gnu++20
+    - -std=c++14
+    - --options-file
+    - -ccbin*
 
+---
+If:
+  PathMatch: ".*\\.(cpp|hpp|h)"
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -x
+    - c++
+  Remove:
+    - -x
+    - cuda
+    - --cuda-host-only
+    - --cuda-path*
+    - --cuda-gpu-arch*
+
+---
+If:
+  PathMatch: ".*\\.cuh"
+CompileFlags:
+  Add:
+    - --cuda-host-only
+    - -x
+    - cuda
+    - -std=c++20

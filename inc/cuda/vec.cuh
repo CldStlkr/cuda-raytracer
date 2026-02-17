@@ -1,5 +1,6 @@
-f I #ifndef VEC3_CUD_H
+#ifndef VEC3_CUD_H
 #define VEC3_CUD_H
+
 #include <cuda_runtime.h>
 #include <math.h>
 
