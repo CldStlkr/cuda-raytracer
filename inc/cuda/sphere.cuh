@@ -4,11 +4,37 @@
 #include "vec.cuh"
 #include <cuda_runtime.h>
 
+enum MaterialType {
+  MAT_DIFFUSE,
+  MAT_METAL,
+  MAT_DIELECTRIC,
+};
+
 class sphere_gpu {
 public:
+  MaterialType mat_type;
+  vec3_gpu albedo; // Color of material
+  float fuzz;      // How perfectly reflective it is (0.0 - 1.0)
+  float ir;
+
   __host__ __device__ sphere_gpu() {}
-  __host__ __device__ sphere_gpu(const point3_gpu& c, float r)
-      : center(c), radius(fmaxf(0.0f, r)) {}
+
+  // Diffuse Constructor
+  __host__ __device__ sphere_gpu(const point3_gpu& c, float r, vec3_gpu color)
+      : mat_type{MAT_DIFFUSE}, albedo{color}, fuzz{0.0f}, ir{0.0f}, center{c},
+        radius{fmaxf(0.0f, r)} {}
+  // Metal Constructor
+  __host__ __device__ sphere_gpu(const point3_gpu& c, float r, vec3_gpu color,
+                                 float f)
+      : mat_type{MAT_METAL}, albedo{color}, fuzz{f < 1 ? f : 1}, ir{0.0f},
+        center{c}, radius{fmaxf(0.0f, r)} {}
+
+  // Dielectric Constructor
+  __host__ __device__ sphere_gpu(const point3_gpu& c, float r,
+                                 float index_of_refraction)
+      : mat_type{MAT_DIELECTRIC}, albedo{vec3_gpu(1.0f, 1.0f, 1.0f)},
+        fuzz{0.0f}, ir{index_of_refraction}, center{c}, radius{fmaxf(0.0f, r)} {
+  }
 
   __host__ __device__ bool hit(const ray_gpu& r, float t_min, float t_max,
                                float& t) const {

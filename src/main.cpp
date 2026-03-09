@@ -32,10 +32,11 @@
 #include "cuda/vec.cuh"
 #include "cuda_structs.hpp"
 
-extern "C" void launch_render(vec3_gpu* frame_buffer, int width, int height);
+extern "C" void launch_render(vec3_gpu* frame_buffer, int width, int height,
+                              int samples_per_pixel);
 
-void render_with_cuda(std::vector<unsigned char>& buffer, int width,
-                      int height) {
+void render_with_cuda(std::vector<unsigned char>& buffer, int width, int height,
+                      int samples) {
   printf("CPU: Starting CUDA render %dx%d\n", width, height);
 
   // Use CUDA GPU type to match kernel expectations
@@ -49,7 +50,7 @@ void render_with_cuda(std::vector<unsigned char>& buffer, int width,
   printf("CPU: Allocated frame buffer of size %zu\n", frame_buffer.size());
 
   // Call CUDA kernel
-  launch_render(frame_buffer.data(), width, height);
+  launch_render(frame_buffer.data(), width, height, samples);
 
   printf("CPU: CUDA render returned, converting to RGB buffer\n");
 
@@ -334,7 +335,7 @@ public:
         //                                    texture_needs_update);
 
         render_with_cuda(image_buffer, current_image_width.load(),
-                         current_image_height.load());
+                         current_image_height.load(), cam.samples_per_pixel);
 
         if (!should_stop_render.load()) {
           render_progress.store(1.0f);

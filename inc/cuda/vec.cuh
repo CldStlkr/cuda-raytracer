@@ -2,6 +2,7 @@
 #define VEC3_CUD_H
 
 #include <cuda_runtime.h>
+#include <curand_kernel.h>
 #include <math.h>
 
 class vec3_gpu {
@@ -79,4 +80,52 @@ __host__ __device__ inline vec3_gpu unit_vector(const vec3_gpu& v) {
 __host__ __device__ inline vec3_gpu normalize(const vec3_gpu& v) {
   return unit_vector(v);
 }
+
+__device__ inline vec3_gpu
+random_in_unit_sphere(curandState* local_rand_state) {
+  vec3_gpu p;
+  do {
+    // Generate random vector in range [-1.0, 1.0] for x, y, z
+    p = 2.0f * vec3_gpu(curand_uniform(local_rand_state),
+                        curand_uniform(local_rand_state),
+                        curand_uniform(local_rand_state)) -
+        vec3_gpu(1, 1, 1);
+  } while (p.length_squared() >= 1.0f);
+  return p;
+}
+
+__device__ inline vec3_gpu random_unit_vector(curandState* local_rand_state) {
+  return unit_vector(random_in_unit_sphere(local_rand_state));
+}
+
+__device__ inline vec3_gpu random_in_unit_disk(curandState* local_rand_state) {
+  vec3_gpu p;
+  do {
+    // Generate random vector in range [-1.0, 1.0] for x, y
+    p = 2.0f * vec3_gpu(curand_uniform(local_rand_state),
+                        curand_uniform(local_rand_state), 0.0f) -
+        vec3_gpu(1.0f, 1.0f, 0.0f);
+  } while (dot(p, p) >= 1.0f);
+  return p;
+}
+
+__device__ inline vec3_gpu reflect(const vec3_gpu& v, const vec3_gpu& n) {
+  return v - 2 * dot(v, n) * n;
+}
+
+__device__ inline vec3_gpu refract(const vec3_gpu& uv, const vec3_gpu& n,
+                                   float etai_over_etat) {
+  float cos_theta = fminf(dot(-uv, n), 1.0f);
+  vec3_gpu r_out_perp = etai_over_etat * (uv + cos_theta * n);
+  vec3_gpu r_out_parallel =
+      -sqrtf(fabsf(1.0f - r_out_perp.length_squared())) * n;
+  return r_out_perp + r_out_parallel;
+}
+
+__device__ inline float reflectance(float cosine, float ref_idx) {
+  float r0 = (1.0f - ref_idx) / (1.0f + ref_idx);
+  r0 = r0 * r0;
+  return r0 + (1.0f - r0) * powf((1.0f - cosine), 5.0f);
+}
+
 #endif
