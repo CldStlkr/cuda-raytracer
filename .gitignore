@@ -11,3 +11,5 @@
 
 *.swp
 /build_test/
+
+CMakeFiles/

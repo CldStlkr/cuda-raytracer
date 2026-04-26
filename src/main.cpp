@@ -18,39 +18,98 @@
 #include <vector>
 
 // Include ray tracing headers
+#include "bvh.hpp"
 #include "camera.hpp"
 #include "color.hpp"
+#include "constant_medium.hpp"
 #include "hittable.hpp"
 #include "hittable_list.hpp"
 #include "interval.hpp"
 #include "material.hpp"
+#include "quad.hpp"
 #include "ray.hpp"
 #include "rt.hpp"
 #include "sphere.hpp"
+#include "texture.hpp"
 #include "vec3.hpp"
 
 #include "cuda/vec.cuh"
 #include "cuda_structs.hpp"
 
-extern "C" void launch_render(vec3_gpu* frame_buffer, int width, int height,
-                              int samples_per_pixel);
+using std::atomic;
+using std::make_shared;
+using std::mutex;
+using std::thread;
+using std::vector;
 
-void render_with_cuda(std::vector<unsigned char>& buffer, int width, int height,
-                      int samples) {
+enum Scenes {
+  STATIC,
+  MOTION_BLUR,
+  CHECKERED_SPHERES,
+  EARTH,
+  PERLIN,
+  QUAD,
+  SIMPLE_LIGHT,
+  CORNELL_BOX,
+  CORNELL_SMOKE,
+  FINAL_SCENE,
+  CUSTOM_SHOWCASE,
+};
+
+extern "C" void launch_render(RenderConfig config, BVHBuffer bvh,
+                              PrimitiveBuffer prims, MaterialBuffer mats,
+                              TextureBuffer texs, PerlinBuffer perlin,
+                              ImageArrayBuffer images);
+
+void render_with_cuda(vector<unsigned char> &buffer, int width, int height,
+                      int samples, int max_depth,
+                      const vector<LinearBVHNode> &nodes,
+                      const vector<PrimitiveGPU> &prims,
+                      const vector<MaterialGPU> &mats,
+                      const vector<TextureGPU> &texs,
+                      const vector<PerlinDataGPU> &perlin,
+                      const vector<unsigned char> &images, const camera &cam) {
   printf("CPU: Starting CUDA render %dx%d\n", width, height);
 
   // Use CUDA GPU type to match kernel expectations
-  std::vector<vec3_gpu> frame_buffer(width * height);
+  vector<vec3_gpu> frame_buffer(width * height);
 
   // Initialize frame buffer to avoid garbage data
-  for (auto& pixel : frame_buffer) {
+  for (auto &pixel : frame_buffer) {
     pixel = vec3_gpu(0.0f, 0.0f, 0.0f);
   }
 
   printf("CPU: Allocated frame buffer of size %zu\n", frame_buffer.size());
 
+  RenderConfig config;
+  config.frame_buffer = frame_buffer.data();
+  config.width = width;
+  config.height = height;
+  config.samples_per_pixel = samples;
+  config.max_depth = max_depth;
+  config.background =
+      Vec3f{float(cam.background.x()), float(cam.background.y()),
+            float(cam.background.z())};
+
+  config.lookfrom = Vec3f{float(cam.lookfrom.x()), float(cam.lookfrom.y()),
+                          float(cam.lookfrom.z())};
+  config.lookat = Vec3f{float(cam.lookat.x()), float(cam.lookat.y()),
+                        float(cam.lookat.z())};
+  config.vup =
+      Vec3f{float(cam.vup.x()), float(cam.vup.y()), float(cam.vup.z())};
+  config.vfov = cam.vfov;
+  config.defocus_angle = cam.defocus_angle;
+  config.focus_dist = cam.focus_dist;
+
+  BVHBuffer bvh = {nodes.data(), nodes.size()};
+  PrimitiveBuffer p_buf = {prims.data(), prims.size()};
+  MaterialBuffer m_buf = {mats.data(), mats.size()};
+  TextureBuffer t_buf = {texs.data(), texs.size()};
+  PerlinBuffer per_buf = {perlin.data(), perlin.size()};
+  ImageArrayBuffer i_buf = {images.data(), images.size()};
+
   // Call CUDA kernel
-  launch_render(frame_buffer.data(), width, height, samples);
+  launch_render(config, bvh, p_buf, m_buf, t_buf, per_buf, i_buf);
 
   printf("CPU: CUDA render returned, converting to RGB buffer\n");
 
@@ -59,9 +118,10 @@ void render_with_cuda(std::vector<unsigned char>& buffer, int width, int height,
 
   for (size_t i = 0; i < frame_buffer.size(); i++) {
     // Clamp values to [0, 1] range before conversion
-    float r = fminf(fmaxf(frame_buffer[i].x(), 0.0f), 1.0f);
-    float g = fminf(fmaxf(frame_buffer[i].y(), 0.0f), 1.0f);
-    float b = fminf(fmaxf(frame_buffer[i].z(), 0.0f), 1.0f);
+    // Gamma 2.0 Correction via sqrt() before clamping
+    float r = fminf(fmaxf(sqrtf(frame_buffer[i].x()), 0.0f), 1.0f);
+    float g = fminf(fmaxf(sqrtf(frame_buffer[i].y()), 0.0f), 1.0f);
+    float b = fminf(fmaxf(sqrtf(frame_buffer[i].z()), 0.0f), 1.0f);
 
     buffer[i * 3 + 0] = static_cast<unsigned char>(255.99f * r);
     buffer[i * 3 + 1] = static_cast<unsigned char>(255.99f * g);
@@ -71,35 +131,44 @@ void render_with_cuda(std::vector<unsigned char>& buffer, int width, int height,
   printf("CPU: Conversion complete\n");
 }
 
-static void glfw_error_callback(int error, const char* description) {
+static void glfw_error_callback(int error, const char *description) {
   fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
 class RayTracerApp {
 private:
-  GLFWwindow* window;
+  GLFWwindow *window;
   GLuint texture_id;
 
   // Ray tracing objects
   camera cam;
   hittable_list world;
 
+  std::vector<LinearBVHNode> gpu_bvh_nodes;
+  std::vector<PrimitiveGPU> gpu_primitives;
+  std::vector<MaterialGPU> gpu_materials;
+  std::vector<TextureGPU> gpu_textures;
+  std::vector<PerlinDataGPU> gpu_perlin;
+  std::vector<unsigned char> gpu_image_buffer;
+
   // Rendering state
-  std::vector<unsigned char> image_buffer;
-  std::mutex buffer_mutex;
-  std::atomic<bool> is_rendering{false};
-  std::atomic<bool> should_stop_render{false};
-  std::atomic<bool> texture_needs_update{false};
-  std::thread render_thread;
+  vector<unsigned char> image_buffer;
+  mutex buffer_mutex;
+  atomic<bool> is_rendering{false};
+  atomic<bool> should_stop_render{false};
+  atomic<bool> texture_needs_update{false};
+  atomic<bool> use_gpu_render{true};
+  thread render_thread;
 
   // Image dimensions
-  std::atomic<int> current_image_width{400};
-  std::atomic<int> current_image_height{225};
+  atomic<int> current_image_width{400};
+  atomic<int> current_image_height{225};
 
   // GUI state
   bool show_controls = true;
   bool show_debug = false;
-  std::atomic<float> render_progress{0.0f};
+  atomic<float> render_progress{0.0f};
+  Scenes s = Scenes::STATIC; // 0 = Static, 1 = Moving Spheres
 
   // Camera parameters for UI
   float camera_pos[3] = {13.0f, 2.0f, 3.0f};
@@ -107,13 +176,15 @@ private:
   float camera_fov = 20.0f;
   float focus_distance = 10.0f;
   float defocus_angle = 0.6f;
+  float aspect_ratio = 16.0f / 9.0f;
+  float background_color[3] = {0.70f, 0.80f, 1.00f};
   int image_width = 400;
   int samples_per_pixel = 10;
   int max_depth = 10;
 
   // Timing
   std::chrono::steady_clock::time_point render_start_time;
-  std::atomic<float> render_time_seconds{0.0f};
+  atomic<float> render_time_seconds{0.0f};
 
 public:
   RayTracerApp() : window(nullptr), texture_id(0) {
@@ -139,7 +210,7 @@ public:
     }
 
     // GL 3.3 + GLSL 330
-    const char* glsl_version = "#version 330 core";
+    const char *glsl_version = "#version 330 core";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -169,7 +240,7 @@ public:
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
+    ImGuiIO &io = ImGui::GetIO();
     (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
@@ -197,86 +268,447 @@ public:
   void setup_world() {
     world.clear();
 
-    // Ground sphere
-    auto ground_material = std::make_shared<lambertian>(color(0.5, 0.5, 0.5));
-    world.add(
-        std::make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
+    // Default book 1 camera matching majority of scenes
+    camera_pos[0] = 13.0f;
+    camera_pos[1] = 2.0f;
+    camera_pos[2] = 3.0f;
+    camera_target[0] = 0.0f;
+    camera_target[1] = 0.0f;
+    camera_target[2] = 0.0f;
+    camera_fov = 20.0f;
+    aspect_ratio = 16.0f / 9.0f;
+    background_color[0] = 0.70f;
+    background_color[1] = 0.80f;
+    background_color[2] = 1.00f;
+    defocus_angle = 0.6f;
+    focus_distance = 10.0f;
 
-    // Central large glass sphere
-    auto glass_material = std::make_shared<dielectric>(1.5);
-    world.add(std::make_shared<sphere>(point3(0, 1, 0), 1.0, glass_material));
+    if (s == Scenes::STATIC) {
+      auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
+      world.add(
+          make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
 
-    // Surrounding spheres in a circle pattern
-    auto red_diffuse = std::make_shared<lambertian>(color(0.7, 0.2, 0.2));
-    world.add(std::make_shared<sphere>(point3(-5, 1, 0), 1.0, red_diffuse));
+      for (int a = -11; a < 11; a++) {
+        for (int b = -11; b < 11; b++) {
+          auto choose_mat = random_double();
+          point3 center(a + 0.9 * random_double(), 0.2,
+                        b + 0.9 * random_double());
 
-    auto blue_diffuse = std::make_shared<lambertian>(color(0.2, 0.2, 0.7));
-    world.add(std::make_shared<sphere>(point3(5, 1, 0), 1.0, blue_diffuse));
+          if ((center - point3(4, 0.2, 0)).length() > 0.9) {
+            shared_ptr<material> sphere_material;
 
-    auto green_diffuse = std::make_shared<lambertian>(color(0.2, 0.7, 0.2));
-    world.add(std::make_shared<sphere>(point3(0, 1, -5), 1.0, green_diffuse));
+            if (choose_mat < 0.8) {
+              // diffuse
+              auto albedo = color::random() * color::random();
+              sphere_material = make_shared<lambertian>(albedo);
+              world.add(make_shared<sphere>(center, 0.2, sphere_material));
+            } else if (choose_mat < 0.95) {
+              // metal
+              auto albedo = color::random(0.5, 1);
+              auto fuzz = random_double(0, 0.5);
+              sphere_material = make_shared<metal>(albedo, fuzz);
+              world.add(make_shared<sphere>(center, 0.2, sphere_material));
+            } else {
+              // glass
+              sphere_material = make_shared<dielectric>(1.5);
+              world.add(make_shared<sphere>(center, 0.2, sphere_material));
+            }
+          }
+        }
+      }
 
-    auto yellow_diffuse = std::make_shared<lambertian>(color(0.7, 0.7, 0.2));
-    world.add(std::make_shared<sphere>(point3(0, 1, 5), 1.0, yellow_diffuse));
+      auto material1 = make_shared<dielectric>(1.5);
+      world.add(make_shared<sphere>(point3(0, 1, 0), 1.0, material1));
 
-    // Metal spheres at diagonal positions
-    auto gold_metal = std::make_shared<metal>(color(0.8, 0.6, 0.2), 0.0);
-    world.add(std::make_shared<sphere>(point3(-3.5, 1, -3.5), 1.0, gold_metal));
+      auto material2 = make_shared<lambertian>(color(0.4, 0.2, 0.1));
+      world.add(make_shared<sphere>(point3(-4, 1, 0), 1.0, material2));
 
-    auto silver_metal = std::make_shared<metal>(color(0.8, 0.8, 0.9), 0.1);
-    world.add(std::make_shared<sphere>(point3(3.5, 1, 3.5), 1.0, silver_metal));
+      auto material3 = make_shared<metal>(color(0.7, 0.6, 0.5), 0.0);
+      world.add(make_shared<sphere>(point3(4, 1, 0), 1.0, material3));
+    } else if (s == Scenes::CORNELL_SMOKE) {
+      camera_pos[0] = 278.0f;
+      camera_pos[1] = 278.0f;
+      camera_pos[2] = -800.0f;
+      camera_target[0] = 278.0f;
+      camera_target[1] = 278.0f;
+      camera_target[2] = 0.0f;
+      camera_fov = 40.0f;
+      aspect_ratio = 1.0f;
+      background_color[0] = 0.0f;
+      background_color[1] = 0.0f;
+      background_color[2] = 0.0f;
 
-    auto copper_metal = std::make_shared<metal>(color(0.7, 0.4, 0.3), 0.2);
-    world.add(
-        std::make_shared<sphere>(point3(-3.5, 1, 3.5), 1.0, copper_metal));
+      auto red = make_shared<lambertian>(color(.65, .05, .05));
+      auto white = make_shared<lambertian>(color(.73, .73, .73));
+      auto green = make_shared<lambertian>(color(.12, .45, .15));
+      auto light = make_shared<diffuse_light>(color(7, 7, 7));
 
-    auto chrome_metal = std::make_shared<metal>(color(0.9, 0.9, 0.9), 0.0);
-    world.add(
-        std::make_shared<sphere>(point3(3.5, 1, -3.5), 1.0, chrome_metal));
+      world.add(make_shared<quad>(point3(555, 0, 0), vec3(0, 555, 0),
+                                  vec3(0, 0, 555), green));
+      world.add(make_shared<quad>(point3(0, 0, 0), vec3(0, 555, 0),
+                                  vec3(0, 0, 555), red));
+      world.add(make_shared<quad>(point3(113, 554, 127), vec3(330, 0, 0),
+                                  vec3(0, 0, 305), light));
+      world.add(make_shared<quad>(point3(0, 555, 0), vec3(555, 0, 0),
+                                  vec3(0, 0, 555), white));
+      world.add(make_shared<quad>(point3(0, 0, 0), vec3(555, 0, 0),
+                                  vec3(0, 0, 555), white));
+      world.add(make_shared<quad>(point3(0, 0, 555), vec3(555, 0, 0),
+                                  vec3(0, 555, 0), white));
 
-    // Smaller spheres at different heights
-    auto purple_diffuse = std::make_shared<lambertian>(color(0.6, 0.2, 0.6));
-    world.add(
-        std::make_shared<sphere>(point3(-2, 0.5, -2), 0.5, purple_diffuse));
+      shared_ptr<hittable> box1 =
+          box(point3(0, 0, 0), point3(165, 330, 165), white);
+      box1 = make_shared<rotate_y>(box1, 15);
+      box1 = make_shared<translate>(box1, vec3(265, 0, 295));
 
-    auto orange_diffuse = std::make_shared<lambertian>(color(0.8, 0.4, 0.1));
-    world.add(std::make_shared<sphere>(point3(2, 0.5, 2), 0.5, orange_diffuse));
+      shared_ptr<hittable> box2 =
+          box(point3(0, 0, 0), point3(165, 165, 165), white);
+      box2 = make_shared<rotate_y>(box2, -18);
+      box2 = make_shared<translate>(box2, vec3(130, 0, 65));
 
-    auto cyan_diffuse = std::make_shared<lambertian>(color(0.2, 0.6, 0.6));
-    world.add(std::make_shared<sphere>(point3(-2, 0.5, 2), 0.5, cyan_diffuse));
+      world.add(make_shared<constant_medium>(box1, 0.01, color(0, 0, 0)));
+      world.add(make_shared<constant_medium>(box2, 0.01, color(1, 1, 1)));
 
-    auto pink_diffuse = std::make_shared<lambertian>(color(0.8, 0.4, 0.6));
-    world.add(std::make_shared<sphere>(point3(2, 0.5, -2), 0.5, pink_diffuse));
+      camera cam;
 
-    // Some elevated spheres for depth
-    auto white_diffuse = std::make_shared<lambertian>(color(0.9, 0.9, 0.9));
-    world.add(std::make_shared<sphere>(point3(-1, 2, -1), 0.3, white_diffuse));
+    } else if (s == Scenes::CORNELL_BOX) {
+      camera_pos[0] = 278.0f;
+      camera_pos[1] = 278.0f;
+      camera_pos[2] = -800.0f;
+      camera_target[0] = 278.0f;
+      camera_target[1] = 278.0f;
+      camera_target[2] = 0.0f;
+      camera_fov = 40.0f;
+      aspect_ratio = 1.0f;
+      background_color[0] = 0.0f;
+      background_color[1] = 0.0f;
+      background_color[2] = 0.0f;
 
-    auto black_diffuse = std::make_shared<lambertian>(color(0.1, 0.1, 0.1));
-    world.add(std::make_shared<sphere>(point3(1, 2, 1), 0.3, black_diffuse));
+      auto red = make_shared<lambertian>(color(.65, .05, .05));
+      auto white = make_shared<lambertian>(color(.73, .73, .73));
+      auto green = make_shared<lambertian>(color(.12, .45, .15));
+      auto light = make_shared<diffuse_light>(color(15, 15, 15));
 
-    // Glass spheres at different positions
-    auto glass2 = std::make_shared<dielectric>(1.3);
-    world.add(std::make_shared<sphere>(point3(-6, 0.7, -2), 0.7, glass2));
+      world.add(make_shared<quad>(point3(555, 0, 0), vec3(0, 555, 0),
+                                  vec3(0, 0, 555), green));
+      world.add(make_shared<quad>(point3(0, 0, 0), vec3(0, 555, 0),
+                                  vec3(0, 0, 555), red));
+      world.add(make_shared<quad>(point3(343, 554, 332), vec3(-130, 0, 0),
+                                  vec3(0, 0, -105), light));
+      world.add(make_shared<quad>(point3(0, 0, 0), vec3(555, 0, 0),
+                                  vec3(0, 0, 555), white));
+      world.add(make_shared<quad>(point3(555, 555, 555), vec3(-555, 0, 0),
+                                  vec3(0, 0, -555), white));
+      world.add(make_shared<quad>(point3(0, 0, 555), vec3(555, 0, 0),
+                                  vec3(0, 555, 0), white));
 
-    auto glass3 = std::make_shared<dielectric>(1.8);
-    world.add(std::make_shared<sphere>(point3(6, 0.7, 2), 0.7, glass3));
+      shared_ptr<hittable> box1 =
+          box(point3(0, 0, 0), point3(165, 330, 165), white);
+      box1 = make_shared<rotate_y>(box1, 15);
+      box1 = std::make_shared<translate>(box1, vec3(265, 0, 295));
+      world.add(box1);
 
-    // Far background spheres for depth
-    auto distant_metal = std::make_shared<metal>(color(0.5, 0.5, 0.7), 0.3);
-    world.add(
-        std::make_shared<sphere>(point3(-10, 1.5, -8), 1.5, distant_metal));
+      shared_ptr<hittable> box2 =
+          box(point3(0, 0, 0), point3(165, 165, 165), white);
+      box2 = make_shared<rotate_y>(box2, -18);
+      box2 = make_shared<translate>(box2, vec3(130, 0, 65));
+      world.add(box2);
 
-    auto distant_diffuse = std::make_shared<lambertian>(color(0.4, 0.6, 0.4));
-    world.add(
-        std::make_shared<sphere>(point3(8, 1.2, -10), 1.2, distant_diffuse));
+    } else if (s == Scenes::SIMPLE_LIGHT) {
+      camera_pos[0] = 26.0f;
+      camera_pos[1] = 3.0f;
+      camera_pos[2] = 6.0f;
+      camera_target[0] = 0.0f;
+      camera_target[1] = 2.0f;
+      camera_target[2] = 0.0f;
+      background_color[0] = 0.0f;
+      background_color[1] = 0.0f;
+      background_color[2] = 0.0f;
+
+      auto pertext = make_shared<noise_texture>(4);
+      world.add(make_shared<sphere>(point3(0, -1000, 0), 1000,
+                                    make_shared<lambertian>(pertext)));
+      world.add(make_shared<sphere>(point3(0, 2, 0), 2,
+                                    make_shared<lambertian>(pertext)));
+
+      auto difflight = make_shared<diffuse_light>(color(4, 4, 4));
+      world.add(make_shared<sphere>(point3(0, 7, 0), 2, difflight));
+      world.add(make_shared<quad>(point3(3, 1, -2), vec3(2, 0, 0),
+                                  vec3(0, 2, 0), difflight));
+
+    } else if (s == Scenes::QUAD) {
+      camera_pos[0] = 0.0f;
+      camera_pos[1] = 0.0f;
+      camera_pos[2] = 9.0f;
+      camera_fov = 80.0f;
+      aspect_ratio = 1.0f;
+
+      // Materials
+      auto left_red = make_shared<lambertian>(color(1.0, 0.2, 0.2));
+      auto back_green = make_shared<lambertian>(color(0.2, 1.0, 0.2));
+      auto right_blue = make_shared<lambertian>(color(0.2, 0.2, 1.0));
+      auto upper_orange = make_shared<lambertian>(color(1.0, 0.5, 0.0));
+      auto lower_teal = make_shared<lambertian>(color(0.2, 0.8, 0.8));
+
+      // Quads
+      world.add(make_shared<quad>(point3(-3, -2, 5), vec3(0, 0, -4),
+                                  vec3(0, 4, 0), left_red));
+      world.add(make_shared<quad>(point3(-2, -2, 0), vec3(4, 0, 0),
+                                  vec3(0, 4, 0), back_green));
+      world.add(make_shared<quad>(point3(3, -2, 1), vec3(0, 0, 4),
+                                  vec3(0, 4, 0), right_blue));
+      world.add(make_shared<quad>(point3(-2, 3, 1), vec3(4, 0, 0),
+                                  vec3(0, 0, 4), upper_orange));
+      world.add(make_shared<quad>(point3(-2, -3, 5), vec3(4, 0, 0),
+                                  vec3(0, 0, -4), lower_teal));
+
+    } else if (s == Scenes::PERLIN) {
+
+      auto pertext = make_shared<noise_texture>(5);
+      world.add(make_shared<sphere>(point3(0, -1000, 0), 1000,
+                                    make_shared<lambertian>(pertext)));
+      world.add(make_shared<sphere>(point3(0, 2, 0), 2,
+                                    make_shared<lambertian>(pertext)));
+
+    } else if (s == Scenes::EARTH) {
+      auto earth_texture = make_shared<image_texture>("earthmap.jpg");
+      auto earth_surface = make_shared<lambertian>(earth_texture);
+      auto globe = make_shared<sphere>(point3(0, 0, 0), 2, earth_surface);
+
+      world.add(globe);
+    } else if (s == Scenes::CHECKERED_SPHERES) {
+
+      auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1),
+                                                  color(.9, .9, .9));
+
+      world.add(make_shared<sphere>(point3(0, -10, 0), 10,
+                                    make_shared<lambertian>(checker)));
+      world.add(make_shared<sphere>(point3(0, 10, 0), 10,
+                                    make_shared<lambertian>(checker)));
+    } else if (s == Scenes::FINAL_SCENE) {
+      camera_pos[0] = 478.0f;
+      camera_pos[1] = 278.0f;
+      camera_pos[2] = -600.0f;
+      camera_target[0] = 278.0f;
+      camera_target[1] = 278.0f;
+      camera_target[2] = 0.0f;
+      camera_fov = 40.0f;
+      aspect_ratio = 1.0f;
+      background_color[0] = 0.0f;
+      background_color[1] = 0.0f;
+      background_color[2] = 0.0f;
+      defocus_angle = 0.0f;
+
+      hittable_list boxes1;
+      auto ground = make_shared<lambertian>(color(0.48, 0.83, 0.53));
+
+      int boxes_per_side = 20;
+      for (int i = 0; i < boxes_per_side; i++) {
+        for (int j = 0; j < boxes_per_side; j++) {
+          auto w = 100.0;
+          auto x0 = -1000.0 + i * w;
+          auto z0 = -1000.0 + j * w;
+          auto y0 = 0.0;
+          auto x1 = x0 + w;
+          auto y1 = random_double(1, 101);
+          auto z1 = z0 + w;
+
+          boxes1.add(box(point3(x0, y0, z0), point3(x1, y1, z1), ground));
+        }
+      }
+
+      world.add(make_shared<bvh_node>(boxes1));
+
+      auto light = make_shared<diffuse_light>(color(7, 7, 7));
+      world.add(make_shared<quad>(point3(123, 554, 147), vec3(300, 0, 0),
+                                  vec3(0, 0, 265), light));
+
+      auto center1 = point3(400, 400, 200);
+      auto center2 = center1 + vec3(30, 0, 0);
+      auto sphere_material = make_shared<lambertian>(color(0.7, 0.3, 0.1));
+      world.add(make_shared<sphere>(center1, center2, 50, sphere_material));
+
+      world.add(make_shared<sphere>(point3(260, 150, 45), 50,
+                                    make_shared<dielectric>(1.5)));
+      world.add(
+          make_shared<sphere>(point3(0, 150, 145), 50,
+                              make_shared<metal>(color(0.8, 0.8, 0.9), 1.0)));
+
+      auto boundary = make_shared<sphere>(point3(360, 150, 145), 70,
+                                          make_shared<dielectric>(1.5));
+      world.add(boundary);
+      world.add(
+          make_shared<constant_medium>(boundary, 0.2, color(0.2, 0.4, 0.9)));
+      boundary = make_shared<sphere>(point3(0, 0, 0), 5000,
+                                     make_shared<dielectric>(1.5));
+      world.add(make_shared<constant_medium>(boundary, .0001, color(1, 1, 1)));
+
+      auto emat =
+          make_shared<lambertian>(make_shared<image_texture>("earthmap.jpg"));
+      world.add(make_shared<sphere>(point3(400, 200, 400), 100, emat));
+      auto pertext = make_shared<noise_texture>(0.2);
+      world.add(make_shared<sphere>(point3(220, 280, 300), 80,
+                                    make_shared<lambertian>(pertext)));
+
+      hittable_list boxes2;
+      auto white = make_shared<lambertian>(color(.73, .73, .73));
+      int ns = 1000;
+      for (int j = 0; j < ns; j++) {
+        boxes2.add(make_shared<sphere>(point3::random(0, 165), 10, white));
+      }
+
+      world.add(make_shared<translate>(
+          make_shared<rotate_y>(make_shared<bvh_node>(boxes2), 15),
+          vec3(-100, 270, 395)));
+
+    } else if (s == Scenes::CUSTOM_SHOWCASE) {
+      camera_pos[0] = 13.0f;
+      camera_pos[1] = 2.0f;
+      camera_pos[2] = 3.0f;
+      camera_target[0] = 0.0f;
+      camera_target[1] = 0.0f;
+      camera_target[2] = 0.0f;
+      camera_fov = 20.0f;
+      background_color[0] = 0.0f;
+      background_color[1] = 0.0f;
+      background_color[2] = 0.0f;
+      aspect_ratio = 1.0f;
+      defocus_angle = 0.0f;
+      focus_distance = 10.0f;
+
+      // Floor
+      auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1),
+                                                  color(.9, .9, .9));
+      world.add(make_shared<sphere>(point3(0, -1000, 0), 1000,
+                                    make_shared<lambertian>(checker)));
+
+      // Central Pillar (Perlin)
+      auto pertext = make_shared<noise_texture>(1.5);
+      shared_ptr<hittable> central_pillar = box(
+          point3(-1, 0, -1), point3(1, 1, 1), make_shared<lambertian>(pertext));
+      world.add(central_pillar);
+
+      // The Prism (Volume)
+      shared_ptr<hittable> prism_boundary = box(
+          point3(-1, 1.1, -1), point3(1, 2.5, 1), make_shared<dielectric>(1.5));
+      world.add(make_shared<constant_medium>(prism_boundary, 0.1,
+                                             color(0.8, 0.8, 1.0)));
+
+      // Earth Orbiter
+      auto earth_texture = make_shared<image_texture>("earthmap.jpg");
+      auto earth_surface = make_shared<lambertian>(earth_texture);
+      world.add(make_shared<sphere>(point3(0, 1.8, 0), 0.4, earth_surface));
+
+      // Internal Glow
+      auto light_mat = make_shared<diffuse_light>(color(10, 10, 10));
+      world.add(make_shared<sphere>(point3(0, 1.8, 0), 0.1, light_mat));
+
+      // Rotating Metallic Corner Pillars
+      auto metal_mat = make_shared<metal>(color(0.8, 0.8, 0.8), 0.0);
+      for (int i = 0; i < 4; i++) {
+        float angle = i * 90.0f;
+        float rad = angle * 3.14159 / 180.0;
+        float x = 4.0 * cos(rad);
+        float z = 4.0 * sin(rad);
+
+        shared_ptr<hittable> corner_pillar =
+            box(point3(-0.5, 0, -0.5), point3(0.5, 3.0, 0.5), metal_mat);
+        corner_pillar = make_shared<rotate_y>(corner_pillar, angle + 45);
+        corner_pillar = make_shared<translate>(corner_pillar, vec3(x, 0, z));
+        world.add(corner_pillar);
+      }
+
+      // Motion Blurred Projectiles
+      auto blur_mat = make_shared<lambertian>(color(0.7, 0.3, 0.1));
+      for (int i = 0; i < 5; i++) {
+        point3 center1(-5, 1 + i, 5 - i * 2);
+        point3 center2(-3, 1 + i, 5 - i * 2);
+        world.add(make_shared<sphere>(center1, center2, 0.2, blur_mat));
+      }
+
+      // Ceiling Light
+      auto ceiling_light = make_shared<diffuse_light>(color(4, 4, 4));
+      world.add(make_shared<quad>(point3(-5, 10, -5), vec3(10, 0, 0),
+                                  vec3(0, 0, 10), ceiling_light));
+
+    } else {
+      // Book 2 Moving Spheres
+      auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
+      world.add(
+          make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
+
+      auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1),
+                                                  color(.9, .9, .9));
+      world.add(make_shared<sphere>(point3(0, -1000, 0), 1000,
+                                    make_shared<lambertian>(checker)));
+
+      for (int a = -11; a < 11; a++) {
+        for (int b = -11; b < 11; b++) {
+          auto choose_mat = random_double();
+          point3 center(a + 0.9 * random_double(), 0.2,
+                        b + 0.9 * random_double());
+
+          if ((center - point3(4, 0.2, 0)).length() > 0.9) {
+            shared_ptr<material> sphere_material;
+
+            if (choose_mat < 0.8) {
+              // diffuse
+              auto albedo = color::random() * color::random();
+              sphere_material = make_shared<lambertian>(albedo);
+              auto center2 = center + vec3(0, random_double(0, .5), 0);
+              world.add(
+                  make_shared<sphere>(center, center2, 0.2, sphere_material));
+            } else if (choose_mat < 0.95) {
+              // metal
+              auto albedo = color::random(0.5, 1);
+              auto fuzz = random_double(0, 0.5);
+              sphere_material = make_shared<metal>(albedo, fuzz);
+              world.add(make_shared<sphere>(center, 0.2, sphere_material));
+            } else {
+              // glass
+              sphere_material = make_shared<dielectric>(1.5);
+              world.add(make_shared<sphere>(center, 0.2, sphere_material));
+            }
+          }
+        }
+      }
+
+      auto material1 = make_shared<dielectric>(1.5);
+      world.add(make_shared<sphere>(point3(0, 1, 0), 1.0, material1));
+
+      auto material2 = make_shared<lambertian>(color(0.4, 0.2, 0.1));
+      world.add(make_shared<sphere>(point3(-4, 1, 0), 1.0, material2));
+
+      auto material3 = make_shared<metal>(color(0.7, 0.6, 0.5), 0.0);
+      world.add(make_shared<sphere>(point3(4, 1, 0), 1.0, material3));
+
+      world = hittable_list(make_shared<bvh_node>(world));
+
+      camera cam;
+    }
+
+    gpu_bvh_nodes.clear();
+    gpu_primitives.clear();
+    gpu_materials.clear();
+    gpu_textures.clear();
+    gpu_perlin.clear();
+    gpu_image_buffer.clear();
+
+    std::unordered_map<material *, int> temporary_material_map;
+    std::unordered_map<texture *, int> temporary_texture_map;
+    auto root_bvh = std::make_shared<bvh_node>(world);
+    flatten_hittable(root_bvh, gpu_bvh_nodes, gpu_primitives, gpu_materials,
+                     gpu_textures, gpu_perlin, gpu_image_buffer,
+                     temporary_material_map, temporary_texture_map);
   }
 
   void setup_camera() {
-    cam.aspect_ratio = 16.0 / 9.0;
+    cam.aspect_ratio = aspect_ratio;
     cam.image_width = image_width;
     cam.samples_per_pixel = samples_per_pixel;
     cam.max_depth = max_depth;
+    cam.background =
+        color(background_color[0], background_color[1], background_color[2]);
     cam.vfov = camera_fov;
     cam.lookfrom = point3(camera_pos[0], camera_pos[1], camera_pos[2]);
     cam.lookat = point3(camera_target[0], camera_target[1], camera_target[2]);
@@ -295,7 +727,7 @@ public:
     int width = current_image_width.load();
     int height = current_image_height.load();
 
-    std::lock_guard<std::mutex> lock(buffer_mutex);
+    std::lock_guard<mutex> lock(buffer_mutex);
     image_buffer.resize(width * height * 3, 0);
 
     glBindTexture(GL_TEXTURE_2D, texture_id);
@@ -304,7 +736,8 @@ public:
   }
 
   void start_render() {
-    if (is_rendering.load()) return;
+    if (is_rendering.load())
+      return;
 
     // Update camera settings
     setup_camera();
@@ -322,20 +755,25 @@ public:
 
     // Forward-declared from cuda_renderer.cu
 
-    render_thread = std::thread([this]() {
+    render_thread = thread([this]() {
       try {
         std::cout << "Starting render: " << current_image_width.load() << "x"
                   << current_image_height.load() << " with "
                   << cam.samples_per_pixel << " samples" << std::endl;
 
-        // Render with progress tracking and periodic texture updates
-        // cam.render_to_buffer_with_progress(world, image_buffer, buffer_mutex,
-        //                                    render_progress,
-        //                                    should_stop_render,
-        //                                    texture_needs_update);
-
-        render_with_cuda(image_buffer, current_image_width.load(),
-                         current_image_height.load(), cam.samples_per_pixel);
+        if (use_gpu_render.load()) {
+          // CUDA Render Path
+          render_with_cuda(image_buffer, current_image_width.load(),
+                           current_image_height.load(), cam.samples_per_pixel,
+                           cam.max_depth, gpu_bvh_nodes, gpu_primitives,
+                           gpu_materials, gpu_textures, gpu_perlin,
+                           gpu_image_buffer, cam);
+        } else {
+          // CPU Render Path
+          cam.render_to_buffer_with_progress(
+              world, image_buffer, buffer_mutex, render_progress,
+              should_stop_render, texture_needs_update);
+        }
 
         if (!should_stop_render.load()) {
           render_progress.store(1.0f);
@@ -344,7 +782,7 @@ public:
         } else {
           std::cout << "Render stopped by user" << std::endl;
         }
-      } catch (const std::exception& e) {
+      } catch (const std::exception &e) {
         std::cerr << "Render error: " << e.what() << std::endl;
       }
       is_rendering.store(false);
@@ -353,7 +791,7 @@ public:
 
   void update_texture() {
     if (texture_needs_update.load()) {
-      std::lock_guard<std::mutex> lock(buffer_mutex);
+      std::lock_guard<mutex> lock(buffer_mutex);
 
       int width = current_image_width.load();
       int height = current_image_height.load();
@@ -369,7 +807,7 @@ public:
   }
 
   void export_ppm() {
-    std::lock_guard<std::mutex> lock(buffer_mutex);
+    std::lock_guard<mutex> lock(buffer_mutex);
 
     if (image_buffer.empty()) {
       std::cout << "No image to export!" << std::endl;
@@ -429,9 +867,33 @@ public:
 
         ImGui::Separator();
 
+        bool is_gpu = use_gpu_render.load();
+        if (ImGui::Checkbox("Use GPU Acceleration (CUDA)", &is_gpu)) {
+          use_gpu_render.store(is_gpu);
+        }
+
+        ImGui::Separator();
+
         bool params_changed = false;
+
+        // Scene selection
+        const char *scenes[] = {"Static Spheres",    "Moving Spheres (Book 2)",
+                                "Checkered Spheres", "Earth",
+                                "Perlin Sphere",     "Quads",
+                                "Simple Light",      "Cornell Box",
+                                "Cornell Smoke",     "Final Scene",
+                                "Obsidian Prism"};
+        int scene_idx = static_cast<int>(s);
+        if (ImGui::Combo("Scene", &scene_idx, scenes, IM_ARRAYSIZE(scenes))) {
+          s = static_cast<Scenes>(scene_idx);
+          setup_world();
+          params_changed = true;
+        }
+
         params_changed |=
-            ImGui::SliderInt("Samples per pixel", &samples_per_pixel, 1, 500);
+            ImGui::ColorEdit3("Background Color", background_color);
+        params_changed |=
+            ImGui::SliderInt("Samples per pixel", &samples_per_pixel, 1, 10000);
         params_changed |= ImGui::SliderInt("Max depth", &max_depth, 1, 50);
         params_changed |=
             ImGui::SliderInt("Image width", &image_width, 100, 1600);
@@ -498,7 +960,7 @@ public:
         ImGui::Text("Update pending: %s",
                     texture_needs_update.load() ? "Yes" : "No");
 
-        ImGuiIO& io = ImGui::GetIO();
+        ImGuiIO &io = ImGui::GetIO();
         ImGui::Text("FPS: %.1f", io.Framerate);
       }
 
@@ -538,7 +1000,7 @@ public:
       }
 
       // Display the image
-      ImGui::Image(reinterpret_cast<void*>(static_cast<intptr_t>(texture_id)),
+      ImGui::Image(reinterpret_cast<void *>(static_cast<intptr_t>(texture_id)),
                    ImVec2(display_width, display_height), ImVec2(0, 0),
                    ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(0, 0, 0, 0));
     } else {

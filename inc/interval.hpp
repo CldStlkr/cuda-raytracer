@@ -11,6 +11,12 @@ public:
 
   interval(double min, double max) : min{min}, max{max} {}
 
+  interval(const interval& a, const interval& b) {
+    // Create interval tightly enclosing two input intervals.
+    min = a.min <= b.min ? a.min : b.min;
+    max = a.max >= b.max ? a.max : b.max;
+  }
+
   double size() const { return max - min; }
 
   bool contains(double x) const { return min <= x && x <= max; }
@@ -27,6 +33,24 @@ public:
 
     return x;
   }
+
+  interval expand(double delta) const {
+    auto padding = delta / 2;
+    return interval(min - padding, max + padding);
+  }
+
+  static const interval empty, universe;
 };
+
+inline const interval interval::empty = interval(+infinity, -infinity);
+inline const interval interval::universe = interval(-infinity, +infinity);
+
+inline interval operator+(const interval& ival, double displacement) {
+  return interval(ival.min + displacement, ival.max + displacement);
+}
+
+inline interval operator+(double displacement, const interval& ival) {
+  return ival + displacement;
+}
 
 #endif // !INTERVAL_HPP

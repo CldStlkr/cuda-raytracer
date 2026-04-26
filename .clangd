@@ -1,3 +1,7 @@
+Diagnostics:
+  Suppress:
+    - module_odr_violation_function
+
 CompileFlags:
   Add:
     - --cuda-path=/usr/local/cuda
@@ -7,6 +11,9 @@ CompileFlags:
     - cuda
     - -std=c++20
     - -I/usr/local/cuda/include
+    - -I/usr/local/cuda/include/cccl
+    - -I/usr/local/cuda/targets/x86_64-linux/include
+    - -I/usr/local/cuda/targets/x86_64-linux/include/cccl
     - -I/home/neel/Dev/personal/cuda-raytracer/inc
   Remove:
     - -forward-unknown-to-host-compiler
@@ -17,7 +24,6 @@ CompileFlags:
     - -std=c++14
     - --options-file
     - -ccbin*
-
 ---
 If:
   PathMatch: ".*\\.(cpp|hpp|h)"
@@ -32,7 +38,6 @@ CompileFlags:
     - --cuda-host-only
     - --cuda-path*
     - --cuda-gpu-arch*
-
 ---
 If:
   PathMatch: ".*\\.cuh"

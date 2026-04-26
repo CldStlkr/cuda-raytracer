@@ -32,13 +32,18 @@ add_library(imgui STATIC ${IMGUI_SRC})
 target_include_directories(imgui PUBLIC extern/imgui extern/imgui/backends)
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
 
+# ----------- STB_IMAGE -------
+target_include_directories(glad PUBLIC extern/stb-image)
+
 # ---------- Executable ----------
 add_executable(main
     src/main.cpp
     src/cuda_renderer.cu
+    src/cuda_structs.cpp
+    src/stb_image_impl.cpp
 )
 
-target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/inc)
+target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/inc /usr/local/cuda/include/cccl)
 
 # Link libraries with proper order
 target_link_libraries(main PRIVATE
@@ -48,6 +53,7 @@ target_link_libraries(main PRIVATE
     OpenGL::GL
     CUDA::cudart
 )
+
 
 # Compiler-specific options
 if(MSVC)

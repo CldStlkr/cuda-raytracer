@@ -3,9 +3,11 @@
 #include "color.hpp"
 #include "hittable.hpp"
 #include "material.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 class camera {
@@ -14,6 +16,7 @@ public:
   int image_width = 100;
   int samples_per_pixel = 10;
   int max_depth = 10;
+  color background;
   double vfov = 90;
   point3 lookfrom = point3(0, 0, 0);
   point3 lookat = point3(0, 0, -1);
@@ -28,12 +31,12 @@ public:
   bool enable_refractions = true;
 
   // Render to buffer with progress tracking and real-time updates
-  void render_to_buffer_with_progress(const hittable& world,
-                                      std::vector<unsigned char>& buffer,
-                                      std::mutex& buffer_mutex,
-                                      std::atomic<float>& progress,
-                                      const std::atomic<bool>& should_stop,
-                                      std::atomic<bool>& texture_needs_update) {
+  void render_to_buffer_with_progress(const hittable &world,
+                                      std::vector<unsigned char> &buffer,
+                                      std::mutex &buffer_mutex,
+                                      std::atomic<float> &progress,
+                                      const std::atomic<bool> &should_stop,
+                                      std::atomic<bool> &texture_needs_update) {
     initialize();
 
     // Ensure buffer is properly sized
@@ -44,104 +47,117 @@ public:
     }
 
     int total_pixels = image_width * image_height;
-    int completed_pixels = 0;
-    int pixels_since_update = 0;
-    const int update_frequency =
-        std::max(1, total_pixels / 100); // Update every 1% of pixels
-
-    auto last_update_time = std::chrono::steady_clock::now();
-    const auto update_interval =
-        std::chrono::milliseconds(100); // Update at most every 100ms
+    std::atomic<int> completed_pixels{0};
+    std::atomic<int> pixels_since_update{0};
+    const int update_frequency = std::max(1, total_pixels / 100); // 1%
 
     std::cout << "Rendering " << image_width << "x" << image_height << " with "
               << samples_per_pixel << " samples per pixel..." << std::endl;
 
-    for (int j = 0; j < image_height && !should_stop.load(); j++) {
-      for (int i = 0; i < image_width && !should_stop.load(); i++) {
-        color pixel_color(0, 0, 0);
-        int sample_count = enable_antialiasing ? samples_per_pixel : 1;
+    std::atomic<int> current_line{0};
+    int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0)
+      num_threads = 4;
+    std::vector<std::thread> threads;
 
-        // Render all samples for this pixel
-        for (int sample = 0; sample < sample_count && !should_stop.load();
-             sample++) {
-          ray r = get_ray(i, j);
-          pixel_color += ray_color(r, max_depth, world);
+    auto worker = [&]() {
+      std::vector<unsigned char> scanline_buffer(image_width * 3);
+      while (!should_stop.load()) {
+        int j = current_line.fetch_add(1);
+        if (j >= image_height)
+          break;
+
+        int row_completed_pixels = 0;
+
+        for (int i = 0; i < image_width && !should_stop.load(); i++) {
+          color pixel_color(0, 0, 0);
+          int sample_count = enable_antialiasing ? samples_per_pixel : 1;
+
+          for (int sample = 0; sample < sample_count && !should_stop.load();
+               sample++) {
+            ray r = get_ray(i, j);
+            pixel_color += ray_color(r, max_depth, world);
+          }
+
+          if (should_stop.load())
+            break;
+
+          double scale = 1.0 / sample_count;
+          pixel_color *= scale;
+
+          auto r_val = linear_to_gamma(pixel_color.x());
+          auto g_val = linear_to_gamma(pixel_color.y());
+          auto b_val = linear_to_gamma(pixel_color.z());
+
+          static const interval intensity(0.000, 0.999);
+          scanline_buffer[i * 3] =
+              static_cast<unsigned char>(256 * intensity.clamp(r_val));
+          scanline_buffer[i * 3 + 1] =
+              static_cast<unsigned char>(256 * intensity.clamp(g_val));
+          scanline_buffer[i * 3 + 2] =
+              static_cast<unsigned char>(256 * intensity.clamp(b_val));
+          row_completed_pixels++;
         }
 
-        if (should_stop.load()) break;
+        if (row_completed_pixels > 0) {
+          {
+            std::lock_guard<std::mutex> lock(buffer_mutex);
+            int idx = j * image_width * 3;
+            std::copy(scanline_buffer.begin(),
+                      scanline_buffer.begin() + row_completed_pixels * 3,
+                      buffer.begin() + idx);
+          }
 
-        // Convert pixel color to RGB bytes
-        double scale = 1.0 / sample_count;
-        pixel_color *= scale;
+          int completed = completed_pixels.fetch_add(row_completed_pixels) +
+                          row_completed_pixels;
+          progress.store(static_cast<float>(completed) / total_pixels);
 
-        auto r_val = linear_to_gamma(pixel_color.x());
-        auto g_val = linear_to_gamma(pixel_color.y());
-        auto b_val = linear_to_gamma(pixel_color.z());
+          int since_update =
+              pixels_since_update.fetch_add(row_completed_pixels) +
+              row_completed_pixels;
 
-        static const interval intensity(0.000, 0.999);
-        unsigned char r_byte =
-            static_cast<unsigned char>(256 * intensity.clamp(r_val));
-        unsigned char g_byte =
-            static_cast<unsigned char>(256 * intensity.clamp(g_val));
-        unsigned char b_byte =
-            static_cast<unsigned char>(256 * intensity.clamp(b_val));
+          if (since_update >= update_frequency || completed == total_pixels) {
+            texture_needs_update.store(true);
+            pixels_since_update.store(0);
 
-        // Update buffer (thread-safe)
-        {
-          std::lock_guard<std::mutex> lock(buffer_mutex);
-          int idx = (j * image_width + i) * 3;
-          buffer[idx] = r_byte;
-          buffer[idx + 1] = g_byte;
-          buffer[idx + 2] = b_byte;
-        }
-
-        completed_pixels++;
-        pixels_since_update++;
-
-        // Update progress
-        float current_progress =
-            static_cast<float>(completed_pixels) / total_pixels;
-        progress.store(current_progress);
-
-        // Trigger texture update periodically for real-time display
-        auto now = std::chrono::steady_clock::now();
-        bool time_for_update = (now - last_update_time) >= update_interval;
-        bool enough_pixels = pixels_since_update >= update_frequency;
-
-        if (time_for_update || enough_pixels ||
-            completed_pixels == total_pixels) {
-          texture_needs_update.store(true);
-          pixels_since_update = 0;
-          last_update_time = now;
-
-          // Optional: print progress every 10%
-          static int last_reported_percent = -1;
-          int current_percent = static_cast<int>(current_progress * 100);
-          if (current_percent >= last_reported_percent + 10) {
-            std::cout << "Progress: " << current_percent << "%" << std::endl;
-            last_reported_percent = current_percent;
+            static std::atomic<int> last_reported_percent{-1};
+            int current_percent = static_cast<int>(
+                static_cast<float>(completed) / total_pixels * 100);
+            if (current_percent >= last_reported_percent.load() + 10) {
+              std::cout << "Progress: " << current_percent << "%" << std::endl;
+              last_reported_percent.store(current_percent);
+            }
           }
         }
-      }
 
-      // Update texture at the end of each row for progressive display
-      if (j % std::max(1, image_height / 20) == 0) { // Update every 5% of rows
-        texture_needs_update.store(true);
+        if (j % std::max(1, image_height / 20) == 0) {
+          texture_needs_update.store(true);
+        }
+      }
+    };
+
+    for (int i = 0; i < num_threads; ++i) {
+      threads.emplace_back(worker);
+    }
+
+    for (auto &t : threads) {
+      if (t.joinable()) {
+        t.join();
       }
     }
 
     if (!should_stop.load()) {
-      std::cout << "Render completed: " << completed_pixels << " pixels"
+      std::cout << "Render completed: " << completed_pixels.load() << " pixels"
                 << std::endl;
     } else {
-      std::cout << "Render stopped at " << completed_pixels << "/"
+      std::cout << "Render stopped at " << completed_pixels.load() << "/"
                 << total_pixels << " pixels" << std::endl;
     }
   }
 
   // Original render method for compatibility
-  void render_to_buffer(const hittable& world,
-                        std::vector<unsigned char>& buffer) {
+  void render_to_buffer(const hittable &world,
+                        std::vector<unsigned char> &buffer) {
     std::mutex dummy_mutex;
     std::atomic<float> dummy_progress{0.0f};
     std::atomic<bool> dummy_stop{false};
@@ -206,8 +222,9 @@ private:
 
     auto ray_origin = (defocus_angle <= 0) ? center : defocus_disk_sample();
     auto ray_direction = pixel_sample - ray_origin;
+    auto ray_time = random_double();
 
-    return ray(ray_origin, ray_direction);
+    return ray(ray_origin, ray_direction, ray_time);
   }
 
   vec3 sample_square() const {
@@ -221,37 +238,42 @@ private:
     return center + (p[0] * defocus_disk_u) + (p[1] * defocus_disk_v);
   }
 
-  color ray_color(const ray& r, int depth, const hittable& world) const {
+  color ray_color(const ray &r, int depth, const hittable &world) const {
     if (depth <= 0) {
       return color(0, 0, 0);
     }
 
     hit_record rec;
-    if (world.hit(r, interval(0.001, infinity), rec)) {
-      ray scattered;
-      color attenuation;
 
-      // Handle material scattering based on enabled features
-      if (enable_shadows && rec.mat->scatter(r, rec, attenuation, scattered)) {
-        // Only do recursive ray tracing if reflections/refractions are enabled
-        if (enable_reflections || enable_refractions) {
-          return attenuation * ray_color(scattered, depth - 1, world);
-        } else {
-          // Simplified shading without recursion
-          vec3 light_dir =
-              unit_vector(vec3(1, 1, 1)); // Simple directional light
-          double light_intensity = std::max(0.0, dot(rec.normal, light_dir));
-          return attenuation *
-                 (0.3 + 0.7 * light_intensity); // Ambient + diffuse
-        }
+    if (!world.hit(r, interval(0.001, infinity), rec)) {
+      return background;
+    }
+    ray scattered;
+    color attenuation;
+
+    // Unconditionally grab any light being emitted by the material we hit.
+    // If it's not a light, this safely returns color(0,0,0).
+    color color_from_emission = rec.mat->emitted(rec.u, rec.v, rec.p);
+    if (enable_shadows && rec.mat->scatter(r, rec, attenuation, scattered)) {
+      color color_from_scatter;
+      if (enable_reflections || enable_refractions) {
+        color_from_scatter =
+            attenuation * ray_color(scattered, depth - 1, world);
+      } else {
+        vec3 light_dir = unit_vector(vec3(1, 1, 1));
+        double light_intensity = std::max(0.0, dot(rec.normal, light_dir));
+        color_from_scatter =
+            attenuation * (0.3 + 0.7 * light_intensity); // Ambient + diffuse
       }
-      return color(0, 0, 0);
+      // Return BOTH the emitted light + the scattered light!
+      // Usually one of these is 0, but both are included for mathematical
+      // completeness
+      return color_from_emission + color_from_scatter;
     }
 
-    // Background gradient (sky)
-    vec3 unit_direction = unit_vector(r.direction());
-    auto a = 0.5 * (unit_direction.y() + 1.0);
-    return (1.0 - a) * color(1.0, 1.0, 1.0) + a * color(0.5, 0.7, 1.0);
+    // If it failed to scatter (e.g., it is a pure Light element, or shadows
+    // are off), it MUST return the emitted light
+    return color_from_emission;
   }
 };
 

@@ -19,6 +19,10 @@ public:
   float focus_dist =
       10.0f; // Distance from camera lookfrom point to plane of perfect focus
 
+  float time0 = 0.0f;
+  float time1 = 0.0f;
+  vec3_gpu background;
+
   __host__ __device__ camera_gpu() {}
 
   __host__ void initialize() {
@@ -69,7 +73,8 @@ public:
     }
 
     vec3_gpu dir = pixel - ray_origin;
-    return ray_gpu(ray_origin, dir);
+    float ray_time = time0 + curand_uniform(local_rand_state) * (time1 - time0);
+    return ray_gpu(ray_origin, dir, ray_time);
   }
 
   __host__ int getImageHeight() const { return image_height; }
