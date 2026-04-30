@@ -173,6 +173,42 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     rec.material_id = prim.material_id;
     return true;
 
+  } else if (prim.type == PrimitiveType::MOVING_QUAD) {
+    vec3_gpu Q_start = make_vec3_gpu(prim.moving_quad.Q_start);
+    vec3_gpu Q_vec = make_vec3_gpu(prim.moving_quad.Q_vec);
+    vec3_gpu Q_current = Q_start + Q_vec * r.time();
+
+    float D_current =
+        prim.moving_quad.D_start + prim.moving_quad.D_vec * r.time();
+    vec3_gpu normal = make_vec3_gpu(prim.moving_quad.normal);
+    vec3_gpu w = make_vec3_gpu(prim.moving_quad.w);
+
+    float denom = dot(normal, r.direction());
+    if (fabsf(denom) < 1e-8f) return false;
+
+    float t = (D_current - dot(normal, r.origin())) / denom;
+    if (t < t_min || t > t_max) return false;
+
+    vec3_gpu intersection = r.at(t);
+    vec3_gpu planar_hitpt_vector = intersection - Q_current;
+    float alpha =
+        dot(w, cross(planar_hitpt_vector, make_vec3_gpu(prim.moving_quad.v)));
+    float beta =
+        dot(w, cross(make_vec3_gpu(prim.moving_quad.u), planar_hitpt_vector));
+
+    if (alpha < 0.0f || alpha > 1.0f || beta < 0.0f || beta > 1.0f)
+      return false;
+
+    rec.t = t;
+    rec.p = {intersection.x(), intersection.y(), intersection.z()};
+    rec.material_id = prim.material_id;
+    rec.u = alpha;
+    rec.v = beta;
+    rec.front_face = dot(r.direction(), normal) < 0.0f;
+    vec3_gpu final_normal = rec.front_face ? normal : -normal;
+    rec.normal = {final_normal.x(), final_normal.y(), final_normal.z()};
+    return true;
+
   } else if (prim.type == PrimitiveType::VOLUME_BOX) {
     vec3_gpu r_o = r.origin() - make_vec3_gpu(prim.volume_box.offset);
     float s_theta = prim.volume_box.sin_theta;

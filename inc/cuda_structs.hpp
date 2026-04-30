@@ -1,4 +1,5 @@
 #pragma once
+#include "cuda/ray.cuh"
 #include "cuda/vec.cuh"
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -15,7 +16,7 @@ struct Vec3f {
   float x, y, z;
 };
 
-inline Vec3f to_vec3f(const vec3 &v) {
+inline Vec3f to_vec3f(const vec3& v) {
   return Vec3f{static_cast<float>(v.x()), static_cast<float>(v.y()),
                static_cast<float>(v.z())};
 }
@@ -41,14 +42,15 @@ struct SphereGPU {
   int material_id; // index into material array
 };
 
-enum class MaterialType : int {
+enum class MaterialType : uint8_t {
   LAMBERTIAN = 0,
   METAL = 1,
   DIELECTRIC = 2,
   DIFFUSE_LIGHT = 3,
+  ISOTROPIC = 4,
 };
 
-enum class TextureType : int {
+enum class TextureType : uint8_t {
   SOLID = 0,
   CHECKER = 1,
   IMAGE = 2,
@@ -99,6 +101,7 @@ enum class PrimitiveType : int {
   MOVING_SPHERE = 2,
   VOLUME_SPHERE = 3,
   VOLUME_BOX = 4,
+  MOVING_QUAD = 5,
 };
 
 struct PrimitiveGPU {
@@ -135,6 +138,12 @@ struct PrimitiveGPU {
       float cos_theta;
       float neg_inv_density;
     } volume_box;
+    struct {
+      Vec3f Q_start, Q_vec;
+      Vec3f u, v, w;
+      Vec3f normal;
+      float D_start, D_vec;
+    } moving_quad;
   };
 
   // AABB for BHV intersection fast-path
@@ -160,7 +169,7 @@ struct LinearBVHNode {
 };
 
 struct RenderConfig {
-  vec3_gpu *frame_buffer;
+  vec3_gpu* frame_buffer;
   int width;
   int height;
   int samples_per_pixel;
@@ -177,55 +186,99 @@ struct RenderConfig {
 };
 
 struct BVHBuffer {
-  const LinearBVHNode *data;
+  const LinearBVHNode* data;
   size_t count;
 };
 
 struct PrimitiveBuffer {
-  const PrimitiveGPU *data;
+  const PrimitiveGPU* data;
   size_t count;
 };
 
 struct MaterialBuffer {
-  const MaterialGPU *data;
+  const MaterialGPU* data;
   size_t count;
 };
 
 struct TextureBuffer {
-  const TextureGPU *data;
+  const TextureGPU* data;
   size_t count;
 };
 
 struct PerlinBuffer {
-  const PerlinDataGPU *data;
+  const PerlinDataGPU* data;
   size_t count;
 };
 
 struct ImageArrayBuffer {
-  const unsigned char *data;
+  const unsigned char* data;
   size_t count_bytes;
 };
 
+// SoA (Structure-of-Arrays) layout for coalesced GPU memory access.
+// Each field is a separate contiguous array of size 'total_rays'.
+// When threads 0-31 in a warp read ray_origin[0..31], that's a single
+// coalesced 128-byte cache line transaction instead of 32 scattered reads.
+struct PathStateSOA {
+  // Ray components (decomposed from ray_gpu for SoA)
+  vec3_gpu* ray_origin;
+  vec3_gpu* ray_dir;
+  float* ray_time;
+
+  // Path state
+  vec3_gpu* attenuation;
+  vec3_gpu* color;
+  int* pixel_index;
+  int* depth;
+  bool* alive;
+};
+
+struct HitResultSOA {
+  // HitRecordGPU components (decomposed for SoA)
+  Vec3f* hit_p;
+  Vec3f* hit_normal;
+  float* hit_t;
+  float* hit_u;
+  float* hit_v;
+  bool* hit_front_face;
+  int* hit_material_id;
+
+  bool* hit_anything;
+};
+
+#define NUM_MATERIAL_TYPES 5
+
+// Per-material queues for warp-aggregated atomic dispatch.
+// Replaces thrust::sort_by_key + thrust::partition with O(1) per-thread
+// queue pushes using __ballot_sync and __shfl_sync.
+struct MaterialQueues {
+  int* queues[NUM_MATERIAL_TYPES]; // per-material index arrays (preallocated to
+                                   // total_rays)
+  int* counts;      // device array of NUM_MATERIAL_TYPES ints (atomic counters)
+  int* next_active; // queue for next bounce's active indices
+  int* next_count;  // device int (atomic counter for next_active)
+};
+
 int get_or_add_texture(std::shared_ptr<texture> tex_ptr,
-                       std::vector<TextureGPU> &linear_textures,
-                       std::vector<PerlinDataGPU> &linear_perlin,
-                       std::vector<unsigned char> &image_buffer,
-                       std::unordered_map<texture *, int> &tex_map);
+                       std::vector<TextureGPU>& linear_textures,
+                       std::vector<PerlinDataGPU>& linear_perlin,
+                       std::vector<unsigned char>& image_buffer,
+                       std::unordered_map<texture*, int>& tex_map);
 
 int get_or_add_material(std::shared_ptr<material> mat_ptr,
-                        std::vector<MaterialGPU> &linear_materials,
-                        std::vector<TextureGPU> &linear_textures,
-                        std::vector<PerlinDataGPU> &linear_perlin,
-                        std::vector<unsigned char> &image_buffer,
-                        std::unordered_map<material *, int> &mat_map,
-                        std::unordered_map<texture *, int> &tex_map);
+                        std::vector<MaterialGPU>& linear_materials,
+                        std::vector<TextureGPU>& linear_textures,
+                        std::vector<PerlinDataGPU>& linear_perlin,
+                        std::vector<unsigned char>& image_buffer,
+                        std::unordered_map<material*, int>& mat_map,
+                        std::unordered_map<texture*, int>& tex_map);
 
 int flatten_hittable(std::shared_ptr<hittable> node,
-                     std::vector<LinearBVHNode> &linear_nodes,
-                     std::vector<PrimitiveGPU> &linear_primitives,
-                     std::vector<MaterialGPU> &linear_materials,
-                     std::vector<TextureGPU> &linear_textures,
-                     std::vector<PerlinDataGPU> &linear_perlin,
-                     std::vector<unsigned char> &image_buffer,
-                     std::unordered_map<material *, int> &mat_map,
-                     std::unordered_map<texture *, int> &tex_map);
+                     std::vector<LinearBVHNode>& linear_nodes,
+                     std::vector<PrimitiveGPU>& linear_primitives,
+                     std::vector<MaterialGPU>& linear_materials,
+                     std::vector<TextureGPU>& linear_textures,
+                     std::vector<PerlinDataGPU>& linear_perlin,
+                     std::vector<unsigned char>& image_buffer,
+                     std::unordered_map<material*, int>& mat_map,
+                     std::unordered_map<texture*, int>& tex_map);

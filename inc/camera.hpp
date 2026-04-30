@@ -31,12 +31,12 @@ public:
   bool enable_refractions = true;
 
   // Render to buffer with progress tracking and real-time updates
-  void render_to_buffer_with_progress(const hittable &world,
-                                      std::vector<unsigned char> &buffer,
-                                      std::mutex &buffer_mutex,
-                                      std::atomic<float> &progress,
-                                      const std::atomic<bool> &should_stop,
-                                      std::atomic<bool> &texture_needs_update) {
+  void render_to_buffer_with_progress(const hittable& world,
+                                      std::vector<unsigned char>& buffer,
+                                      std::mutex& buffer_mutex,
+                                      std::atomic<float>& progress,
+                                      const std::atomic<bool>& should_stop,
+                                      std::atomic<bool>& texture_needs_update) {
     initialize();
 
     // Ensure buffer is properly sized
@@ -56,16 +56,14 @@ public:
 
     std::atomic<int> current_line{0};
     int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0)
-      num_threads = 4;
+    if (num_threads == 0) num_threads = 4;
     std::vector<std::thread> threads;
 
     auto worker = [&]() {
       std::vector<unsigned char> scanline_buffer(image_width * 3);
       while (!should_stop.load()) {
         int j = current_line.fetch_add(1);
-        if (j >= image_height)
-          break;
+        if (j >= image_height) break;
 
         int row_completed_pixels = 0;
 
@@ -79,8 +77,7 @@ public:
             pixel_color += ray_color(r, max_depth, world);
           }
 
-          if (should_stop.load())
-            break;
+          if (should_stop.load()) break;
 
           double scale = 1.0 / sample_count;
           pixel_color *= scale;
@@ -140,7 +137,7 @@ public:
       threads.emplace_back(worker);
     }
 
-    for (auto &t : threads) {
+    for (auto& t : threads) {
       if (t.joinable()) {
         t.join();
       }
@@ -156,8 +153,8 @@ public:
   }
 
   // Original render method for compatibility
-  void render_to_buffer(const hittable &world,
-                        std::vector<unsigned char> &buffer) {
+  void render_to_buffer(const hittable& world,
+                        std::vector<unsigned char>& buffer) {
     std::mutex dummy_mutex;
     std::atomic<float> dummy_progress{0.0f};
     std::atomic<bool> dummy_stop{false};
@@ -238,7 +235,7 @@ private:
     return center + (p[0] * defocus_disk_u) + (p[1] * defocus_disk_v);
   }
 
-  color ray_color(const ray &r, int depth, const hittable &world) const {
+  color ray_color(const ray& r, int depth, const hittable& world) const {
     if (depth <= 0) {
       return color(0, 0, 0);
     }
@@ -265,7 +262,7 @@ private:
         color_from_scatter =
             attenuation * (0.3 + 0.7 * light_intensity); // Ambient + diffuse
       }
-      // Return BOTH the emitted light + the scattered light!
+      // Return BOTH the emitted light + the scattered light
       // Usually one of these is 0, but both are included for mathematical
       // completeness
       return color_from_emission + color_from_scatter;

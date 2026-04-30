@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cuda_profiler_api.h>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -61,21 +62,21 @@ extern "C" void launch_render(RenderConfig config, BVHBuffer bvh,
                               TextureBuffer texs, PerlinBuffer perlin,
                               ImageArrayBuffer images);
 
-void render_with_cuda(vector<unsigned char> &buffer, int width, int height,
+void render_with_cuda(vector<unsigned char>& buffer, int width, int height,
                       int samples, int max_depth,
-                      const vector<LinearBVHNode> &nodes,
-                      const vector<PrimitiveGPU> &prims,
-                      const vector<MaterialGPU> &mats,
-                      const vector<TextureGPU> &texs,
-                      const vector<PerlinDataGPU> &perlin,
-                      const vector<unsigned char> &images, const camera &cam) {
+                      const vector<LinearBVHNode>& nodes,
+                      const vector<PrimitiveGPU>& prims,
+                      const vector<MaterialGPU>& mats,
+                      const vector<TextureGPU>& texs,
+                      const vector<PerlinDataGPU>& perlin,
+                      const vector<unsigned char>& images, const camera& cam) {
   printf("CPU: Starting CUDA render %dx%d\n", width, height);
 
   // Use CUDA GPU type to match kernel expectations
   vector<vec3_gpu> frame_buffer(width * height);
 
   // Initialize frame buffer to avoid garbage data
-  for (auto &pixel : frame_buffer) {
+  for (auto& pixel : frame_buffer) {
     pixel = vec3_gpu(0.0f, 0.0f, 0.0f);
   }
 
@@ -131,13 +132,13 @@ void render_with_cuda(vector<unsigned char> &buffer, int width, int height,
   printf("CPU: Conversion complete\n");
 }
 
-static void glfw_error_callback(int error, const char *description) {
+static void glfw_error_callback(int error, const char* description) {
   fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
 class RayTracerApp {
 private:
-  GLFWwindow *window;
+  GLFWwindow* window;
   GLuint texture_id;
 
   // Ray tracing objects
@@ -210,7 +211,7 @@ public:
     }
 
     // GL 3.3 + GLSL 330
-    const char *glsl_version = "#version 330 core";
+    const char* glsl_version = "#version 330 core";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -240,7 +241,7 @@ public:
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO &io = ImGui::GetIO();
+    ImGuiIO& io = ImGui::GetIO();
     (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
@@ -562,77 +563,117 @@ public:
           vec3(-100, 270, 395)));
 
     } else if (s == Scenes::CUSTOM_SHOWCASE) {
-      camera_pos[0] = 13.0f;
-      camera_pos[1] = 2.0f;
-      camera_pos[2] = 3.0f;
-      camera_target[0] = 0.0f;
-      camera_target[1] = 0.0f;
+      camera_pos[0] = 478.0f;
+      camera_pos[1] = 278.0f;
+      camera_pos[2] = -600.0f;
+      camera_target[0] = 278.0f;
+      camera_target[1] = 278.0f;
       camera_target[2] = 0.0f;
-      camera_fov = 20.0f;
+      camera_fov = 40.0f;
+      aspect_ratio = 1.0f;
       background_color[0] = 0.0f;
       background_color[1] = 0.0f;
       background_color[2] = 0.0f;
-      aspect_ratio = 1.0f;
       defocus_angle = 0.0f;
-      focus_distance = 10.0f;
 
-      // Floor
-      auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1),
-                                                  color(.9, .9, .9));
-      world.add(make_shared<sphere>(point3(0, -1000, 0), 1000,
-                                    make_shared<lambertian>(checker)));
+      // 1. The Obsidian Grid (Floor)
+      hittable_list floor_tiles;
+      auto slate = make_shared<lambertian>(color(0.12, 0.12, 0.15));
+      auto chrome = make_shared<metal>(color(0.8, 0.8, 0.9), 0.0);
+      auto blue_glow = make_shared<diffuse_light>(color(2, 4, 10));
+      auto red_glow = make_shared<diffuse_light>(color(10, 2, 2));
+      auto gold_mat = make_shared<metal>(color(0.8, 0.6, 0.2), 0.1);
 
-      // Central Pillar (Perlin)
-      auto pertext = make_shared<noise_texture>(1.5);
-      shared_ptr<hittable> central_pillar = box(
-          point3(-1, 0, -1), point3(1, 1, 1), make_shared<lambertian>(pertext));
-      world.add(central_pillar);
+      int tiles_per_side = 20;
+      for (int i = 0; i < tiles_per_side; i++) {
+        for (int j = 0; j < tiles_per_side; j++) {
+          auto w = 100.0;
+          auto x0 = -1000.0 + i * w;
+          auto z0 = -1000.0 + j * w;
+          auto y1 = random_double(1, 101);
 
-      // The Prism (Volume)
-      shared_ptr<hittable> prism_boundary = box(
-          point3(-1, 1.1, -1), point3(1, 2.5, 1), make_shared<dielectric>(1.5));
-      world.add(make_shared<constant_medium>(prism_boundary, 0.1,
-                                             color(0.8, 0.8, 1.0)));
+          shared_ptr<material> tile_mat = slate;
+          double prob = random_double();
+          if (prob < 0.1)
+            tile_mat = chrome;
+          else if (prob < 0.13)
+            tile_mat = blue_glow;
+          else if (prob < 0.16)
+            tile_mat = red_glow;
+          else if (prob < 0.20)
+            tile_mat = gold_mat;
 
-      // Earth Orbiter
-      auto earth_texture = make_shared<image_texture>("earthmap.jpg");
-      auto earth_surface = make_shared<lambertian>(earth_texture);
-      world.add(make_shared<sphere>(point3(0, 1.8, 0), 0.4, earth_surface));
-
-      // Internal Glow
-      auto light_mat = make_shared<diffuse_light>(color(10, 10, 10));
-      world.add(make_shared<sphere>(point3(0, 1.8, 0), 0.1, light_mat));
-
-      // Rotating Metallic Corner Pillars
-      auto metal_mat = make_shared<metal>(color(0.8, 0.8, 0.8), 0.0);
-      for (int i = 0; i < 4; i++) {
-        float angle = i * 90.0f;
-        float rad = angle * 3.14159 / 180.0;
-        float x = 4.0 * cos(rad);
-        float z = 4.0 * sin(rad);
-
-        shared_ptr<hittable> corner_pillar =
-            box(point3(-0.5, 0, -0.5), point3(0.5, 3.0, 0.5), metal_mat);
-        corner_pillar = make_shared<rotate_y>(corner_pillar, angle + 45);
-        corner_pillar = make_shared<translate>(corner_pillar, vec3(x, 0, z));
-        world.add(corner_pillar);
+          floor_tiles.add(
+              box(point3(x0, 0, z0), point3(x0 + w, y1, z0 + w), tile_mat));
+        }
       }
+      world.add(make_shared<bvh_node>(floor_tiles));
 
-      // Motion Blurred Projectiles
-      auto blur_mat = make_shared<lambertian>(color(0.7, 0.3, 0.1));
-      for (int i = 0; i < 5; i++) {
-        point3 center1(-5, 1 + i, 5 - i * 2);
-        point3 center2(-3, 1 + i, 5 - i * 2);
-        world.add(make_shared<sphere>(center1, center2, 0.2, blur_mat));
+      // 2. Backlit Window (Primary Light)
+      auto window_light = make_shared<diffuse_light>(color(12, 12, 12));
+      world.add(make_shared<quad>(point3(123, 554, 500), vec3(300, 0, 0),
+                                  vec3(0, 0, -265), window_light));
+
+      // 3. The Core Monolith (Liquid Column + Metallic Sphere)
+      auto water = make_shared<dielectric>(1.33); // Water-like refraction
+      shared_ptr<hittable> monolith_column =
+          box(point3(-60, 0, -60), point3(60, 350, 60), water);
+      monolith_column = make_shared<rotate_y>(monolith_column, 25);
+      monolith_column =
+          make_shared<translate>(monolith_column, vec3(278, 102, 278));
+      world.add(monolith_column);
+
+      // Metallic sphere inside the liquid column
+      auto monolith_metal = make_shared<metal>(color(0.8, 0.82, 0.85), 0.05);
+      world.add(make_shared<sphere>(point3(278, 278, 278), 45, monolith_metal));
+
+      // 4. Satellite Gallery
+      auto earth_tex = make_shared<image_texture>("earthmap.jpg");
+      auto earth_ptr = make_shared<sphere>(point3(400, 450, 200), 80,
+                                           make_shared<lambertian>(earth_tex));
+      world.add(earth_ptr);
+      // Very faint mist around Earth
+      auto glass = make_shared<dielectric>(1.5);
+      world.add(make_shared<constant_medium>(
+          make_shared<sphere>(point3(400, 450, 200), 100, glass), 0.002,
+          color(1, 1, 1)));
+
+      // perlin marble
+      auto pertext = make_shared<noise_texture>(0.1);
+      world.add(make_shared<sphere>(point3(150, 250, 100), 60,
+                                    make_shared<lambertian>(pertext)));
+
+      // 5. Voxel Cube Cluster (1000 spheres in a grid)
+      hittable_list voxel_cluster;
+      auto white = make_shared<lambertian>(color(0.73, 0.73, 0.73));
+      auto teal = make_shared<lambertian>(color(0.1, 0.6, 0.6));
+      for (int i = 0; i < 1000; i++) {
+        auto mat = (random_double() < 0.5) ? white : teal;
+        voxel_cluster.add(make_shared<sphere>(point3::random(0, 165), 10, mat));
       }
+      world.add(make_shared<translate>(
+          make_shared<rotate_y>(make_shared<bvh_node>(voxel_cluster), 15),
+          vec3(-100, 270, 395)));
 
-      // Ceiling Light
-      auto ceiling_light = make_shared<diffuse_light>(color(4, 4, 4));
-      world.add(make_shared<quad>(point3(-5, 10, -5), vec3(10, 0, 0),
-                                  vec3(0, 0, 10), ceiling_light));
+      // 6. Vibrating Pyramid (Metallic Cubes) - moved down and closer
+      auto metal_cube_mat = make_shared<metal>(color(0.7, 0.7, 0.8), 0.3);
+      point3 t_center(450, 110, 120);
+      int layers = 6;
+      for (int i = 0; i < layers; i++) {
+        for (int j = 0; j <= i; j++) {
+          for (int k = 0; k <= j; k++) {
+            point3 base = t_center + vec3(k * 25 - j * 12.5, (layers - i) * 25,
+                                          j * 25 - i * 12.5);
+            point3 offset = vec3(random_double(-10, 10), random_double(-10, 10),
+                                 random_double(-10, 10));
+            world.add(moving_box(base, base + offset, base + vec3(15, 15, 15),
+                                 base + offset + vec3(15, 15, 15),
+                                 metal_cube_mat));
+          }
+        }
+      }
 
     } else {
-      // Book 2 Moving Spheres
       auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
       world.add(
           make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
@@ -694,8 +735,8 @@ public:
     gpu_perlin.clear();
     gpu_image_buffer.clear();
 
-    std::unordered_map<material *, int> temporary_material_map;
-    std::unordered_map<texture *, int> temporary_texture_map;
+    std::unordered_map<material*, int> temporary_material_map;
+    std::unordered_map<texture*, int> temporary_texture_map;
     auto root_bvh = std::make_shared<bvh_node>(world);
     flatten_hittable(root_bvh, gpu_bvh_nodes, gpu_primitives, gpu_materials,
                      gpu_textures, gpu_perlin, gpu_image_buffer,
@@ -736,8 +777,7 @@ public:
   }
 
   void start_render() {
-    if (is_rendering.load())
-      return;
+    if (is_rendering.load()) return;
 
     // Update camera settings
     setup_camera();
@@ -782,7 +822,7 @@ public:
         } else {
           std::cout << "Render stopped by user" << std::endl;
         }
-      } catch (const std::exception &e) {
+      } catch (const std::exception& e) {
         std::cerr << "Render error: " << e.what() << std::endl;
       }
       is_rendering.store(false);
@@ -877,7 +917,7 @@ public:
         bool params_changed = false;
 
         // Scene selection
-        const char *scenes[] = {"Static Spheres",    "Moving Spheres (Book 2)",
+        const char* scenes[] = {"Static Spheres",    "Moving Spheres (Book 2)",
                                 "Checkered Spheres", "Earth",
                                 "Perlin Sphere",     "Quads",
                                 "Simple Light",      "Cornell Box",
@@ -960,7 +1000,7 @@ public:
         ImGui::Text("Update pending: %s",
                     texture_needs_update.load() ? "Yes" : "No");
 
-        ImGuiIO &io = ImGui::GetIO();
+        ImGuiIO& io = ImGui::GetIO();
         ImGui::Text("FPS: %.1f", io.Framerate);
       }
 
@@ -1000,7 +1040,7 @@ public:
       }
 
       // Display the image
-      ImGui::Image(reinterpret_cast<void *>(static_cast<intptr_t>(texture_id)),
+      ImGui::Image(reinterpret_cast<void*>(static_cast<intptr_t>(texture_id)),
                    ImVec2(display_width, display_height), ImVec2(0, 0),
                    ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(0, 0, 0, 0));
     } else {
@@ -1062,6 +1102,31 @@ public:
     }
   }
 
+  void run_headless() {
+    s = Scenes::CUSTOM_SHOWCASE;
+    samples_per_pixel = 10;
+    max_depth = 10;
+    image_width = 200;
+
+    setup_world();
+    setup_camera();
+
+    int width = current_image_width.load();
+    int height = current_image_height.load();
+
+    std::cout << "Headless render: " << width << "x" << height << ", "
+              << cam.samples_per_pixel << " spp" << std::endl;
+
+    cudaProfilerStart();
+    render_with_cuda(
+        image_buffer, current_image_width.load(), current_image_height.load(),
+        cam.samples_per_pixel, cam.max_depth, gpu_bvh_nodes, gpu_primitives,
+        gpu_materials, gpu_textures, gpu_perlin, gpu_image_buffer, cam);
+    cudaProfilerStop();
+
+    export_ppm(); // Optional but just to verify
+  }
+
   void cleanup() {
     cleanup_render_thread();
 
@@ -1081,23 +1146,25 @@ public:
   }
 };
 
-int main() {
+int main(int argc, char* argv[]) {
+  bool headless = false;
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--headless") headless = true;
+  }
+
   RayTracerApp app;
+
+  if (headless) {
+    app.run_headless();
+    return EXIT_SUCCESS;
+  }
 
   if (!app.initialize()) {
     std::cerr << "Failed to initialize application" << std::endl;
     return EXIT_FAILURE;
   }
 
-  std::cout << "Ray Tracer started successfully!" << std::endl;
-  std::cout << "Use the controls panel to adjust settings and start rendering."
-            << std::endl;
-  std::cout << "The rendered image will appear in real-time in the GUI!"
-            << std::endl;
-
   app.run();
   app.cleanup();
-
-  std::cout << "Application closed cleanly." << std::endl;
   return EXIT_SUCCESS;
 }
