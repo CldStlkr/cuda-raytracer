@@ -1,5 +1,11 @@
 # CUDA and Vulkan Path Tracer
 
+![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat&logo=nvidia&logoColor=white)
+![C++](https://img.shields.io/badge/C++17-00599C?style=flat&logo=cplusplus&logoColor=white)
+![Vulkan](https://img.shields.io/badge/Vulkan-AC162C?style=flat&logo=vulkan&logoColor=white)
+![CMake](https://img.shields.io/badge/CMake-064F8C?style=flat&logo=cmake&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
+
 A high-performance GPU path tracer utilizing CUDA for compute and a custom Vulkan presentation layer. 
 The project implements advanced path tracing algorithms, spatial acceleration structures, and a data-oriented architecture designed for optimal parallel execution.
 
