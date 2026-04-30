@@ -1,0 +1,23 @@
+name: Build
+on:
+  push:
+    branches: [refactor/wavefront]
+  pull_request:
+    branches: [refactor/wavefront]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Jimver/cuda-toolkit@v0.2.11
+        with:
+          cuda: '12.0.0'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libglfw3-dev libgl1-mesa-dev libvulkan-dev
+      - name: Build
+        run: |
+          mkdir build && cd build
+          cmake ..
+          make -j
