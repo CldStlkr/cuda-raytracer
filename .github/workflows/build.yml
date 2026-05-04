@@ -6,12 +6,12 @@ on:
     branches: [main]
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: Jimver/cuda-toolkit@v0.2.11
         with:
-          cuda: '12.0.0'
+          cuda: '12.4.0'
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -20,4 +20,4 @@ jobs:
         run: |
           mkdir build && cd build
           cmake ..
-          make -j
+          make -j$(nproc)
