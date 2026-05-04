@@ -9,9 +9,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: Jimver/cuda-toolkit@v0.2.11
+      - uses: Jimver/cuda-toolkit@v0.2.30
         with:
-          cuda: '12.4.0'
+          cuda: '12.6.0'
       - name: Install dependencies
         run: |
           sudo apt-get update
