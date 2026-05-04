@@ -6,16 +6,14 @@ on:
     branches: [main]
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:13.1.1-devel-ubuntu24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: Jimver/cuda-toolkit@v0.2.30
-        with:
-          cuda: '12.6.0'
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake libglfw3-dev libgl1-mesa-dev libvulkan-dev
+          apt-get update
+          apt-get install -y cmake libglfw3-dev libgl1-mesa-dev libvulkan-dev
       - name: Build
         run: |
           mkdir build && cd build
