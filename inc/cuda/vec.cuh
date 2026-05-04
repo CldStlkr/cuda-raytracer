@@ -48,6 +48,12 @@ __host__ __device__ inline vec3_gpu operator+(const vec3_gpu& u,
                                               const vec3_gpu& v) {
   return vec3_gpu(u.e[0] + v.e[0], u.e[1] + v.e[1], u.e[2] + v.e[2]);
 }
+__host__ __device__ inline vec3_gpu operator+(const vec3_gpu& v, float t) {
+  return vec3_gpu(v.e[0] + t, v.e[1] + t, v.e[2] + t);
+}
+__host__ __device__ inline vec3_gpu operator+(float t, const vec3_gpu& v) {
+  return v + t;
+}
 __host__ __device__ inline vec3_gpu operator-(const vec3_gpu& u,
                                               const vec3_gpu& v) {
   return vec3_gpu(u.e[0] - v.e[0], u.e[1] - v.e[1], u.e[2] - v.e[2]);
@@ -64,6 +70,10 @@ __host__ __device__ inline vec3_gpu operator*(const vec3_gpu& v, float t) {
 }
 __host__ __device__ inline vec3_gpu operator/(const vec3_gpu& v, float t) {
   return (1.0f / t) * v;
+}
+__host__ __device__ inline vec3_gpu operator/(const vec3_gpu& u,
+                                              const vec3_gpu& v) {
+  return vec3_gpu(u.e[0] / v.e[0], u.e[1] / v.e[1], u.e[2] / v.e[2]);
 }
 __host__ __device__ inline float dot(const vec3_gpu& u, const vec3_gpu& v) {
   return u.e[0] * v.e[0] + u.e[1] * v.e[1] + u.e[2] * v.e[2];
