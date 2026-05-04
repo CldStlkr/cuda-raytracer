@@ -1,5 +1,6 @@
 # CUDA and Vulkan Path Tracer
 
+![Build](https://github.com/CldStlkr/cuda-raytracer/actions/workflows/build.yml/badge.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat&logo=nvidia&logoColor=white)
 ![C++](https://img.shields.io/badge/C++20-00599C?style=flat&logo=cplusplus&logoColor=white)
 ![Vulkan](https://img.shields.io/badge/Vulkan-AC162C?style=flat&logo=vulkan&logoColor=white)
