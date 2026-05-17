@@ -22,12 +22,16 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include <cuda/std/span>
 #include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 #include <unistd.h>
 
-extern "C" void launch_render(RenderConfig config, BVHBuffer bvh, PrimitiveBuffer prims, MaterialBuffer mats,
-                              TextureBuffer texs, PerlinBuffer perlin, ImageArrayBuffer images);
+using cuda::std::span;
+
+extern "C" void launch_render(RenderConfig config, span<LinearBVHNode> h_bvh, span<PrimitiveGPU> h_prims,
+                              span<MaterialGPU> h_mats, span<TextureGPU> h_texs, span<PerlinDataGPU> h_perlin,
+                              span<unsigned char> h_images);
 
 extern "C" void* import_vulkan_memory(int fd, size_t size);
 extern "C" void cleanup_cuda_interop();
@@ -159,12 +163,12 @@ void VulkanApp::draw_frame() {
       config.defocus_angle = defocus_angle_;
       config.focus_dist = focus_distance_;
 
-      BVHBuffer bvh = {gpu_bvh_nodes_.data(), gpu_bvh_nodes_.size()};
-      PrimitiveBuffer p_buf = {gpu_primitives_.data(), gpu_primitives_.size()};
-      MaterialBuffer m_buf = {gpu_materials_.data(), gpu_materials_.size()};
-      TextureBuffer t_buf = {gpu_textures_.data(), gpu_textures_.size()};
-      PerlinBuffer per_buf = {gpu_perlin_.data(), gpu_perlin_.size()};
-      ImageArrayBuffer i_buf = {gpu_image_buffer_.data(), gpu_image_buffer_.size()};
+      span<LinearBVHNode> bvh = {gpu_bvh_nodes_.data(), gpu_bvh_nodes_.size()};
+      span<PrimitiveGPU> p_buf = {gpu_primitives_.data(), gpu_primitives_.size()};
+      span<MaterialGPU> m_buf = {gpu_materials_.data(), gpu_materials_.size()};
+      span<TextureGPU> t_buf = {gpu_textures_.data(), gpu_textures_.size()};
+      span<PerlinDataGPU> per_buf = {gpu_perlin_.data(), gpu_perlin_.size()};
+      span<unsigned char> i_buf = {gpu_image_buffer_.data(), gpu_image_buffer_.size()};
 
       if (cuda_interop_pointer_) {
         launch_render(config, bvh, p_buf, m_buf, t_buf, per_buf, i_buf);
@@ -1180,12 +1184,12 @@ void VulkanApp::run_headless() {
   config.defocus_angle = defocus_angle_;
   config.focus_dist = focus_distance_;
 
-  BVHBuffer bvh = {gpu_bvh_nodes_.data(), gpu_bvh_nodes_.size()};
-  PrimitiveBuffer p_buf = {gpu_primitives_.data(), gpu_primitives_.size()};
-  MaterialBuffer m_buf = {gpu_materials_.data(), gpu_materials_.size()};
-  TextureBuffer t_buf = {gpu_textures_.data(), gpu_textures_.size()};
-  PerlinBuffer per_buf = {gpu_perlin_.data(), gpu_perlin_.size()};
-  ImageArrayBuffer i_buf = {gpu_image_buffer_.data(), gpu_image_buffer_.size()};
+  span<LinearBVHNode> bvh = {gpu_bvh_nodes_.data(), gpu_bvh_nodes_.size()};
+  span<PrimitiveGPU> p_buf = {gpu_primitives_.data(), gpu_primitives_.size()};
+  span<MaterialGPU> m_buf = {gpu_materials_.data(), gpu_materials_.size()};
+  span<TextureGPU> t_buf = {gpu_textures_.data(), gpu_textures_.size()};
+  span<PerlinDataGPU> per_buf = {gpu_perlin_.data(), gpu_perlin_.size()};
+  span<unsigned char> i_buf = {gpu_image_buffer_.data(), gpu_image_buffer_.size()};
 
   auto start = std::chrono::high_resolution_clock::now();
 

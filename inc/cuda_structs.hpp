@@ -2,6 +2,7 @@
 #include "cuda/ray.cuh"
 #include "cuda/vec.cuh"
 #include <cstdint>
+#include <cuda/std/span>
 #include <cuda_runtime.h>
 #include <memory>
 #include <unordered_map>
@@ -12,13 +13,14 @@
 #include "quad.hpp"
 #include "sphere.hpp"
 
+using cuda::std::span;
+
 struct Vec3f {
   float x, y, z;
 };
 
 inline Vec3f to_vec3f(const vec3& v) {
-  return Vec3f{static_cast<float>(v.x()), static_cast<float>(v.y()),
-               static_cast<float>(v.z())};
+  return Vec3f{static_cast<float>(v.x()), static_cast<float>(v.y()), static_cast<float>(v.z())};
 }
 
 struct RayGPU {
@@ -185,36 +187,6 @@ struct RenderConfig {
   float focus_dist;
 };
 
-struct BVHBuffer {
-  const LinearBVHNode* data;
-  size_t count;
-};
-
-struct PrimitiveBuffer {
-  const PrimitiveGPU* data;
-  size_t count;
-};
-
-struct MaterialBuffer {
-  const MaterialGPU* data;
-  size_t count;
-};
-
-struct TextureBuffer {
-  const TextureGPU* data;
-  size_t count;
-};
-
-struct PerlinBuffer {
-  const PerlinDataGPU* data;
-  size_t count;
-};
-
-struct ImageArrayBuffer {
-  const unsigned char* data;
-  size_t count_bytes;
-};
-
 // SoA (Structure-of-Arrays) layout for coalesced GPU memory access.
 // Each field is a separate contiguous array of size 'total_rays'.
 // When threads 0-31 in a warp read ray_origin[0..31], that's a single
@@ -254,31 +226,22 @@ struct HitResultSOA {
 struct MaterialQueues {
   int* queues[NUM_MATERIAL_TYPES]; // per-material index arrays (preallocated to
                                    // total_rays)
-  int* counts;      // device array of NUM_MATERIAL_TYPES ints (atomic counters)
-  int* next_active; // queue for next bounce's active indices
-  int* next_count;  // device int (atomic counter for next_active)
+  int* counts;                     // device array of NUM_MATERIAL_TYPES ints (atomic counters)
+  int* next_active;                // queue for next bounce's active indices
+  int* next_count;                 // device int (atomic counter for next_active)
 };
 
-int get_or_add_texture(std::shared_ptr<texture> tex_ptr,
-                       std::vector<TextureGPU>& linear_textures,
-                       std::vector<PerlinDataGPU>& linear_perlin,
-                       std::vector<unsigned char>& image_buffer,
+int get_or_add_texture(std::shared_ptr<texture> tex_ptr, std::vector<TextureGPU>& linear_textures,
+                       std::vector<PerlinDataGPU>& linear_perlin, std::vector<unsigned char>& image_buffer,
                        std::unordered_map<texture*, int>& tex_map);
 
-int get_or_add_material(std::shared_ptr<material> mat_ptr,
-                        std::vector<MaterialGPU>& linear_materials,
-                        std::vector<TextureGPU>& linear_textures,
-                        std::vector<PerlinDataGPU>& linear_perlin,
-                        std::vector<unsigned char>& image_buffer,
-                        std::unordered_map<material*, int>& mat_map,
+int get_or_add_material(std::shared_ptr<material> mat_ptr, std::vector<MaterialGPU>& linear_materials,
+                        std::vector<TextureGPU>& linear_textures, std::vector<PerlinDataGPU>& linear_perlin,
+                        std::vector<unsigned char>& image_buffer, std::unordered_map<material*, int>& mat_map,
                         std::unordered_map<texture*, int>& tex_map);
 
-int flatten_hittable(std::shared_ptr<hittable> node,
-                     std::vector<LinearBVHNode>& linear_nodes,
-                     std::vector<PrimitiveGPU>& linear_primitives,
-                     std::vector<MaterialGPU>& linear_materials,
-                     std::vector<TextureGPU>& linear_textures,
-                     std::vector<PerlinDataGPU>& linear_perlin,
-                     std::vector<unsigned char>& image_buffer,
-                     std::unordered_map<material*, int>& mat_map,
+int flatten_hittable(std::shared_ptr<hittable> node, std::vector<LinearBVHNode>& linear_nodes,
+                     std::vector<PrimitiveGPU>& linear_primitives, std::vector<MaterialGPU>& linear_materials,
+                     std::vector<TextureGPU>& linear_textures, std::vector<PerlinDataGPU>& linear_perlin,
+                     std::vector<unsigned char>& image_buffer, std::unordered_map<material*, int>& mat_map,
                      std::unordered_map<texture*, int>& tex_map);

@@ -5,6 +5,7 @@
 
 #include "cuda_structs.hpp"
 
+#include <cuda/std/span>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 
@@ -12,6 +13,8 @@
 #include <thrust/sequence.h>
 
 #include <stdio.h>
+
+using cuda::std::span;
 
 __host__ __device__ inline vec3_gpu to_gpu(const Vec3f& v) { return vec3_gpu(v.x, v.y, v.z); }
 __host__ __device__ inline Vec3f to_vec3f(const vec3_gpu& v) { return {v.x(), v.y(), v.z()}; }
@@ -50,7 +53,8 @@ __global__ void render_init(int total_rays, curandState* rand_state) {
 }
 
 __global__ void intersect_bvh(PathStateSOA paths, HitResultSOA hits, int* active_indices, int num_active,
-                              const LinearBVHNode* bvh_nodes, const PrimitiveGPU* primitives, curandState* rand_state) {
+                              const span<LinearBVHNode> bvh_nodes, const span<PrimitiveGPU> primitives,
+                              curandState* rand_state) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_active) return;
   int path_idx = active_indices[idx];
@@ -123,7 +127,7 @@ __device__ float perlin_turb(const point3_gpu& p, const PerlinDataGPU& pdata, in
 }
 
 __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, const point3_gpu& p,
-                                      const PerlinDataGPU* perlin, unsigned char* image_data) {
+                                      const span<PerlinDataGPU> perlin, span<unsigned char> image_data) {
   if (tex.type == TextureType::SOLID) {
     return to_gpu(tex.solid.color);
   } else if (tex.type == TextureType::CHECKER) {
@@ -150,8 +154,9 @@ __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, c
 }
 
 __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int* active_indices, int num_active,
-                             MaterialGPU* materials, TextureGPU* textures, PerlinDataGPU* perlin, unsigned char* images,
-                             curandState* rand_state, int* next_active, int* next_count, camera_gpu cam) {
+                             span<MaterialGPU> materials, span<TextureGPU> textures, span<PerlinDataGPU> perlin,
+                             span<unsigned char> images, curandState* rand_state, int* next_active, int* next_count,
+                             camera_gpu cam) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_active) return;
   int path_idx = active_indices[idx];
@@ -291,8 +296,9 @@ static void free_hit_result_soa(HitResultSOA& h) {
   cudaFree(h.hit_anything);
 }
 
-extern "C" void launch_render(RenderConfig config, BVHBuffer h_bvh, PrimitiveBuffer h_prims, MaterialBuffer h_mats,
-                              TextureBuffer h_texs, PerlinBuffer h_perlin, ImageArrayBuffer h_images) {
+extern "C" void launch_render(RenderConfig config, span<LinearBVHNode> h_bvh, span<PrimitiveGPU> h_prims,
+                              span<MaterialGPU> h_mats, span<TextureGPU> h_texs, span<PerlinDataGPU> h_perlin,
+                              span<unsigned char> h_images) {
   int width = config.width, height = config.height;
   int BATCH_SIZE = 16, total_rays = width * height * BATCH_SIZE;
 
@@ -312,23 +318,23 @@ extern "C" void launch_render(RenderConfig config, BVHBuffer h_bvh, PrimitiveBuf
   TextureGPU* d_texs = nullptr;
   PerlinDataGPU* d_perlin = nullptr;
   unsigned char* d_imgs = nullptr;
-  cudaMalloc(&d_bvh, h_bvh.count * sizeof(LinearBVHNode));
-  cudaMalloc(&d_prims, h_prims.count * sizeof(PrimitiveGPU));
-  cudaMalloc(&d_mats, h_mats.count * sizeof(MaterialGPU));
-  cudaMemcpy(d_bvh, h_bvh.data, h_bvh.count * sizeof(LinearBVHNode), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_prims, h_prims.data, h_prims.count * sizeof(PrimitiveGPU), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_mats, h_mats.data, h_mats.count * sizeof(MaterialGPU), cudaMemcpyHostToDevice);
-  if (h_texs.count > 0) {
-    cudaMalloc(&d_texs, h_texs.count * sizeof(TextureGPU));
-    cudaMemcpy(d_texs, h_texs.data, h_texs.count * sizeof(TextureGPU), cudaMemcpyHostToDevice);
+  cudaMalloc(&d_bvh, h_bvh.size_bytes());
+  cudaMalloc(&d_prims, h_prims.size_bytes());
+  cudaMalloc(&d_mats, h_mats.size_bytes());
+  cudaMemcpy(d_bvh, h_bvh.data(), h_bvh.size_bytes(), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_prims, h_prims.data(), h_prims.size_bytes(), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_mats, h_mats.data(), h_mats.size_bytes(), cudaMemcpyHostToDevice);
+  if (!h_texs.empty()) {
+    cudaMalloc(&d_texs, h_texs.size_bytes());
+    cudaMemcpy(d_texs, h_texs.data(), h_texs.size_bytes(), cudaMemcpyHostToDevice);
   }
-  if (h_perlin.count > 0) {
-    cudaMalloc(&d_perlin, h_perlin.count * sizeof(PerlinDataGPU));
-    cudaMemcpy(d_perlin, h_perlin.data, h_perlin.count * sizeof(PerlinDataGPU), cudaMemcpyHostToDevice);
+  if (!h_perlin.empty()) {
+    cudaMalloc(&d_perlin, h_perlin.size_bytes());
+    cudaMemcpy(d_perlin, h_perlin.data(), h_perlin.size_bytes(), cudaMemcpyHostToDevice);
   }
-  if (h_images.count_bytes > 0) {
-    cudaMalloc(&d_imgs, h_images.count_bytes);
-    cudaMemcpy(d_imgs, h_images.data, h_images.count_bytes, cudaMemcpyHostToDevice);
+  if (!h_images.empty()) {
+    cudaMalloc(&d_imgs, h_images.size_bytes());
+    cudaMemcpy(d_imgs, h_images.data(), h_images.size_bytes(), cudaMemcpyHostToDevice);
   }
 
   camera_gpu cam;
@@ -361,6 +367,13 @@ extern "C" void launch_render(RenderConfig config, BVHBuffer h_bvh, PrimitiveBuf
   cudaMalloc(&d_next, total_rays * sizeof(int));
   cudaMalloc(&d_cnt, sizeof(int));
 
+  span<LinearBVHNode> d_bvh_span = {d_bvh, h_bvh.size()};
+  span<PrimitiveGPU> d_prims_span = {d_prims, h_prims.size()};
+  span<MaterialGPU> d_mats_span = {d_mats, h_mats.size()};
+  span<TextureGPU> d_texs_span = {d_texs, h_texs.size()};
+  span<PerlinDataGPU> d_perlin_span = {d_perlin, h_perlin.size()};
+  span<unsigned char> d_imgs_span = {d_imgs, h_images.size()};
+
   int batches = (config.samples_per_pixel + BATCH_SIZE - 1) / BATCH_SIZE;
   for (int b = 0; b < batches; b++) {
     int cur = std::min(BATCH_SIZE, config.samples_per_pixel - b * BATCH_SIZE);
@@ -369,10 +382,11 @@ extern "C" void launch_render(RenderConfig config, BVHBuffer h_bvh, PrimitiveBuf
     generate_rays<<<(active + 255) / 256, 256>>>(d_paths, cam, d_rand_state, width, height, cur);
     for (int bounce = 0; bounce < config.max_depth && active > 0; bounce++) {
       cudaMemset(d_hits.hit_anything, 0, active * sizeof(bool));
-      intersect_bvh<<<(active + 255) / 256, 256>>>(d_paths, d_hits, d_active, active, d_bvh, d_prims, d_rand_state);
+      intersect_bvh<<<(active + 255) / 256, 256>>>(d_paths, d_hits, d_active, active, d_bvh_span, d_prims_span,
+                                                   d_rand_state);
       cudaMemset(d_cnt, 0, sizeof(int));
-      shade_kernel<<<(active + 255) / 256, 256>>>(d_paths, d_hits, d_active, active, d_mats, d_texs, d_perlin, d_imgs,
-                                                  d_rand_state, d_next, d_cnt, cam);
+      shade_kernel<<<(active + 255) / 256, 256>>>(d_paths, d_hits, d_active, active, d_mats_span, d_texs_span,
+                                                  d_perlin_span, d_imgs_span, d_rand_state, d_next, d_cnt, cam);
       cudaMemcpy(&active, d_cnt, sizeof(int), cudaMemcpyDeviceToHost);
       std::swap(d_active, d_next);
     }
