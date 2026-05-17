@@ -18,7 +18,7 @@ add_custom_command(
     OUTPUT  ${SHADER_BIN_DIR}/fullscreen.vert.spv
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
     COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/fullscreen.vert
-                                       -o ${SHADER_BIN_DIR}/fullscreen.vert.spv
+              -o ${SHADER_BIN_DIR}/fullscreen.vert.spv
     DEPENDS ${SHADER_SRC_DIR}/fullscreen.vert
     COMMENT "Compiling fullscreen.vert → SPIR-V"
 )
@@ -27,7 +27,7 @@ add_custom_command(
     OUTPUT  ${SHADER_BIN_DIR}/tonemap.frag.spv
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
     COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/tonemap.frag
-                                       -o ${SHADER_BIN_DIR}/tonemap.frag.spv
+              -o ${SHADER_BIN_DIR}/tonemap.frag.spv
     DEPENDS ${SHADER_SRC_DIR}/tonemap.frag
     COMMENT "Compiling tonemap.frag → SPIR-V"
 )
@@ -39,7 +39,10 @@ find_package(Vulkan REQUIRED)
 
 # glslc lives inside the SDK; fall back to explicit path if CMake didn't find it
 if(NOT Vulkan_GLSLC_EXECUTABLE)
-    set(Vulkan_GLSLC_EXECUTABLE "$ENV{HOME}/vulkansdk/1.4.341.1/x86_64/bin/glslc")
+    set(
+      Vulkan_GLSLC_EXECUTABLE
+      "$ENV{HOME}/vulkansdk/1.4.341.1/x86_64/bin/glslc"
+    )
 endif()
 message(STATUS "glslc: ${Vulkan_GLSLC_EXECUTABLE}")
 
@@ -65,7 +68,7 @@ file(MAKE_DIRECTORY ${SHADER_BIN_DIR})
 add_custom_command(
     OUTPUT  ${SHADER_BIN_DIR}/fullscreen.vert.spv
     COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/fullscreen.vert
-                                       -o ${SHADER_BIN_DIR}/fullscreen.vert.spv
+              -o ${SHADER_BIN_DIR}/fullscreen.vert.spv
     DEPENDS ${SHADER_SRC_DIR}/fullscreen.vert
     COMMENT "Compiling fullscreen.vert → SPIR-V"
 )
@@ -73,7 +76,7 @@ add_custom_command(
 add_custom_command(
     OUTPUT  ${SHADER_BIN_DIR}/tonemap.frag.spv
     COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/tonemap.frag
-                                       -o ${SHADER_BIN_DIR}/tonemap.frag.spv
+              -o ${SHADER_BIN_DIR}/tonemap.frag.spv
     DEPENDS ${SHADER_SRC_DIR}/tonemap.frag
     COMMENT "Compiling tonemap.frag → SPIR-V"
 )
@@ -82,6 +85,7 @@ add_custom_target(shaders ALL DEPENDS
     ${SHADER_BIN_DIR}/fullscreen.vert.spv
     ${SHADER_BIN_DIR}/tonemap.frag.spv
 )
+
 
 # ---------- Executable ----------
 add_executable(main
@@ -98,6 +102,7 @@ add_dependencies(main shaders)
 target_include_directories(main PRIVATE
     ${CMAKE_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/extern/stb-image
+    ${CUDAToolkit_INCLUDE_DIRS}
 )
 
 # Tell the C++ code where to find the compiled .spv files at runtime
@@ -110,12 +115,14 @@ target_link_libraries(main PRIVATE
     glfw
     Vulkan::Vulkan
     CUDA::cudart
-    CUDA::cuda_driver   # needed for cudaImportExternalMemory, cudaExternalMemory*
+    CUDA::cuda_driver # cudaImportExternalMemory, cudaExternalMemory*
     CUDA::curand
 )
 
 if(MSVC)
     target_compile_options(main PRIVATE /W4)
 else()
-  target_compile_options(main PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+  target_compile_options(
+    main PRIVATE -Wall -Wextra -Wno-missing-field-initializers
+  )
 endif()
