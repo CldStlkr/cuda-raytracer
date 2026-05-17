@@ -98,7 +98,6 @@ add_dependencies(main shaders)
 target_include_directories(main PRIVATE
     ${CMAKE_SOURCE_DIR}/inc
     ${CMAKE_SOURCE_DIR}/extern/stb-image
-    /usr/local/cuda/include/cccl/thrust
 )
 
 # Tell the C++ code where to find the compiled .spv files at runtime
@@ -112,10 +111,11 @@ target_link_libraries(main PRIVATE
     Vulkan::Vulkan
     CUDA::cudart
     CUDA::cuda_driver   # needed for cudaImportExternalMemory, cudaExternalMemory*
+    CUDA::curand
 )
 
 if(MSVC)
     target_compile_options(main PRIVATE /W4)
 else()
-    target_compile_options(main PRIVATE -Wall -Wextra)
+  target_compile_options(main PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 endif()
