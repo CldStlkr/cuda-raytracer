@@ -11,6 +11,11 @@ jobs:
     container: nvidia/cuda:13.1.1-devel-ubuntu24.04
 
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
