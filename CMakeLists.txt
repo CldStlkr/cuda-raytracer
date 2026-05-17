@@ -105,6 +105,12 @@ target_include_directories(main PRIVATE
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/extern/cccl)
+    target_include_directories(main PRIVATE
+        ${CMAKE_SOURCE_DIR}/extern/cccl/libcudacxx/include
+    )
+endif()
+
 # Tell the C++ code where to find the compiled .spv files at runtime
 target_compile_definitions(main PRIVATE
     SHADER_DIR="${SHADER_BIN_DIR}/"
