@@ -5,7 +5,6 @@
 
 #include "cuda_structs.hpp"
 
-#include <cuda/std/span>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 
@@ -13,8 +12,6 @@
 #include <thrust/sequence.h>
 
 #include <stdio.h>
-
-using cuda::std::span;
 
 __host__ __device__ inline vec3_gpu to_gpu(const Vec3f& v) { return vec3_gpu(v.x, v.y, v.z); }
 __host__ __device__ inline Vec3f to_vec3f(const vec3_gpu& v) { return {v.x(), v.y(), v.z()}; }
@@ -53,7 +50,7 @@ __global__ void render_init(int total_rays, curandState* rand_state) {
 }
 
 __global__ void intersect_bvh(PathStateSOA paths, HitResultSOA hits, int* active_indices, int num_active,
-                              const span<LinearBVHNode> bvh_nodes, const span<PrimitiveGPU> primitives,
+                              const cuda::span<LinearBVHNode> bvh_nodes, const cuda::span<PrimitiveGPU> primitives,
                               curandState* rand_state) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_active) return;
@@ -127,7 +124,7 @@ __device__ float perlin_turb(const point3_gpu& p, const PerlinDataGPU& pdata, in
 }
 
 __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, const point3_gpu& p,
-                                      const span<PerlinDataGPU> perlin, span<unsigned char> image_data) {
+                                      const cuda::span<PerlinDataGPU> perlin, cuda::span<unsigned char> image_data) {
   if (tex.type == TextureType::SOLID) {
     return to_gpu(tex.solid.color);
   } else if (tex.type == TextureType::CHECKER) {
@@ -154,9 +151,9 @@ __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, c
 }
 
 __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int* active_indices, int num_active,
-                             span<MaterialGPU> materials, span<TextureGPU> textures, span<PerlinDataGPU> perlin,
-                             span<unsigned char> images, curandState* rand_state, int* next_active, int* next_count,
-                             camera_gpu cam) {
+                             cuda::span<MaterialGPU> materials, cuda::span<TextureGPU> textures,
+                             cuda::span<PerlinDataGPU> perlin, cuda::span<unsigned char> images,
+                             curandState* rand_state, int* next_active, int* next_count, camera_gpu cam) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_active) return;
   int path_idx = active_indices[idx];
@@ -296,9 +293,9 @@ static void free_hit_result_soa(HitResultSOA& h) {
   cudaFree(h.hit_anything);
 }
 
-extern "C" void launch_render(RenderConfig config, span<LinearBVHNode> h_bvh, span<PrimitiveGPU> h_prims,
-                              span<MaterialGPU> h_mats, span<TextureGPU> h_texs, span<PerlinDataGPU> h_perlin,
-                              span<unsigned char> h_images) {
+extern "C" void launch_render(RenderConfig config, cuda::span<LinearBVHNode> h_bvh, cuda::span<PrimitiveGPU> h_prims,
+                              cuda::span<MaterialGPU> h_mats, cuda::span<TextureGPU> h_texs,
+                              cuda::span<PerlinDataGPU> h_perlin, cuda::span<unsigned char> h_images) {
   int width = config.width, height = config.height;
   int BATCH_SIZE = 16, total_rays = width * height * BATCH_SIZE;
 
@@ -367,12 +364,12 @@ extern "C" void launch_render(RenderConfig config, span<LinearBVHNode> h_bvh, sp
   cudaMalloc(&d_next, total_rays * sizeof(int));
   cudaMalloc(&d_cnt, sizeof(int));
 
-  span<LinearBVHNode> d_bvh_span = {d_bvh, h_bvh.size()};
-  span<PrimitiveGPU> d_prims_span = {d_prims, h_prims.size()};
-  span<MaterialGPU> d_mats_span = {d_mats, h_mats.size()};
-  span<TextureGPU> d_texs_span = {d_texs, h_texs.size()};
-  span<PerlinDataGPU> d_perlin_span = {d_perlin, h_perlin.size()};
-  span<unsigned char> d_imgs_span = {d_imgs, h_images.size()};
+  cuda::span<LinearBVHNode> d_bvh_span = {d_bvh, h_bvh.size()};
+  cuda::span<PrimitiveGPU> d_prims_span = {d_prims, h_prims.size()};
+  cuda::span<MaterialGPU> d_mats_span = {d_mats, h_mats.size()};
+  cuda::span<TextureGPU> d_texs_span = {d_texs, h_texs.size()};
+  cuda::span<PerlinDataGPU> d_perlin_span = {d_perlin, h_perlin.size()};
+  cuda::span<unsigned char> d_imgs_span = {d_imgs, h_images.size()};
 
   int batches = (config.samples_per_pixel + BATCH_SIZE - 1) / BATCH_SIZE;
   for (int b = 0; b < batches; b++) {

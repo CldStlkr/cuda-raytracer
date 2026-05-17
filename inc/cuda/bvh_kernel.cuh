@@ -255,9 +255,9 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
   return false;
 }
 
-__device__ inline bool hit_linear_bvh(const span<LinearBVHNode> bvh_nodes, const span<PrimitiveGPU> primitives,
-                                      const ray_gpu& ray, float t_min, float t_max, HitRecordGPU& rec,
-                                      curandState* local_rand_state) {
+__device__ inline bool hit_linear_bvh(const cuda::span<LinearBVHNode> bvh_nodes,
+                                      const cuda::span<PrimitiveGPU> primitives, const ray_gpu& ray, float t_min,
+                                      float t_max, HitRecordGPU& rec, curandState* local_rand_state) {
   int stack[64];
   int stack_ptr = 0;
 

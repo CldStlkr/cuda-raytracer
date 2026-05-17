@@ -13,7 +13,9 @@
 #include "quad.hpp"
 #include "sphere.hpp"
 
+namespace cuda {
 using cuda::std::span;
+}
 
 struct Vec3f {
   float x, y, z;
