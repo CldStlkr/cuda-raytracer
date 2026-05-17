@@ -5,18 +5,14 @@
 
 class sphere : public hittable {
 public:
-  sphere(const point3& static_center, double radius,
-         std::shared_ptr<material> mat)
-      : center{static_center, vec3{0, 0, 0}}, radius{std::fmax(0, radius)},
-        mat{mat} {
+  sphere(const point3& static_center, double radius, std::shared_ptr<material> mat)
+      : center{static_center, vec3{0, 0, 0}}, radius{std::fmax(0, radius)}, mat{mat} {
     auto rvec = vec3(radius, radius, radius);
     bbox = aabb(static_center - rvec, static_center + rvec);
   }
 
-  sphere(const point3& center1, const point3& center2, double radius,
-         std::shared_ptr<material> mat)
-      : center{center1, center2 - center1}, radius{std::fmax(0, radius)},
-        mat{mat} {
+  sphere(const point3& center1, const point3& center2, double radius, std::shared_ptr<material> mat)
+      : center{center1, center2 - center1}, radius{std::fmax(0, radius)}, mat{mat} {
     auto rvec = vec3(radius, radius, radius);
     aabb box1(center.at(0) - rvec, center.at(0) + rvec);
     aabb box2(center.at(1) - rvec, center.at(1) + rvec);
@@ -79,10 +75,10 @@ private:
     //     <0 0 1> yields <0.25 0.50>       < 0  0 -1> yields <0.75 0.50>
 
     auto theta = std::acos(-p.y());
-    auto phi = std::atan2(-p.z(), p.x()) + pi;
+    auto phi = std::atan2(-p.z(), p.x()) + std::numbers::pi;
 
-    u = phi / (2 * pi);
-    v = theta / pi;
+    u = phi / (2 * std::numbers::pi);
+    v = theta / std::numbers::pi;
   }
 };
 
