@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: nvidia/cuda:12.4.1-devel-ubuntu22.04
+    container: nvidia/cuda:13.1.1-devel-ubuntu24.04
     steps:
       - name: Install Git
         run: |
@@ -16,9 +16,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Fetch libcudacxx headers
+      - name: Fetch CCCL headers
         run: |
-          git clone --depth 1 --branch v2.8.0 https://github.com/NVIDIA/cccl.git extern/cccl
+          git clone --depth 1 --branch v3.1.0 https://github.com/NVIDIA/cccl.git extern/cccl
       - name: Install dependencies
         run: |
           apt-get update
@@ -32,8 +32,8 @@ jobs:
       - name: Install Vulkan SDK (for glslc)
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | apt-key add -
-          wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
-            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           apt-get update
           apt-get install -y vulkan-sdk
       - name: Build
