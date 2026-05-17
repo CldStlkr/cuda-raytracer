@@ -22,7 +22,7 @@ jobs:
 
       - name: Fetch CCCL headers
         run: |
-          git clone --depth 1 --branch v3.3.3 https://github.com/NVIDIA/cccl.git extern/cccl
+          git clone --depth 1 --branch v2.8.0 https://github.com/NVIDIA/cccl.git extern/cccl
 
       - name: Install dependencies
         run: |
