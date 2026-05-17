@@ -18,7 +18,7 @@ jobs:
           submodules: recursive
       - name: Fetch CCCL headers
         run: |
-          git clone --depth 1 --branch v3.1.0 https://github.com/NVIDIA/cccl.git extern/cccl
+          git clone --depth 1 --branch v3.1.4 https://github.com/NVIDIA/cccl.git extern/cccl
       - name: Install dependencies
         run: |
           apt-get update
