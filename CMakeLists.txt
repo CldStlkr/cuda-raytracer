@@ -66,12 +66,9 @@ add_executable(main
 )
 add_dependencies(main shaders)
 
-# CCCL must come before CUDAToolkit headers so vendored headers win
 if(EXISTS ${CMAKE_SOURCE_DIR}/extern/cccl)
     target_include_directories(main BEFORE PRIVATE
-        ${CMAKE_SOURCE_DIR}/extern/cccl/thrust/include
         ${CMAKE_SOURCE_DIR}/extern/cccl/libcudacxx/include
-        ${CMAKE_SOURCE_DIR}/extern/cccl/cub
     )
 endif()
 target_include_directories(main PRIVATE
