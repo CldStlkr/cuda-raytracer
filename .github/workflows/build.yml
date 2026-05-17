@@ -4,16 +4,36 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     container: nvidia/cuda:13.1.1-devel-ubuntu24.04
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y cmake libglfw3-dev libgl1-mesa-dev libvulkan-dev
+          apt-get install -y \
+            cmake \
+            libglfw3-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            wget \
+            gnupg
+
+      - name: Install Vulkan SDK (for glslc)
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | apt-key add -
+          wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          apt-get update
+          apt-get install -y vulkan-sdk
+
       - name: Build
         run: |
           mkdir build && cd build
