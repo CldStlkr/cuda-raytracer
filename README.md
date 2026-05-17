@@ -7,15 +7,12 @@
 ![CMake](https://img.shields.io/badge/CMake-064F8C?style=flat&logo=cmake&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-A high-performance GPU path tracer utilizing CUDA for compute and a custom Vulkan presentation layer. 
+A high-performance GPU path tracer utilizing CUDA for compute and a custom Vulkan presentation layer.
 The project implements advanced path tracing algorithms, spatial acceleration structures, and a data-oriented architecture designed for optimal parallel execution.
 
 ## Rendering Performance Comparison (Video sped up 45x)
 
-
-
-https://github.com/user-attachments/assets/5fad7c5e-e44a-4a9f-904a-4c3c3b3cec6e
-
+<https://github.com/user-attachments/assets/5fad7c5e-e44a-4a9f-904a-4c3c3b3cec6e>
 
 *CPU wall time: 1 hour 30 minutes (12 threads). GPU wall time: 58 seconds. ~93x speedup*
 
@@ -43,14 +40,14 @@ graph TD
 
 ### Zero-Copy Vulkan Interoperability
 
-To eliminate PCIe memory transfer bottlenecks between the compute device and the presentation layer, the application utilizes `VK_KHR_external_memory`. 
-Rendered frames are computed directly into Vulkan swapchain images that are mapped to CUDA memory via `cudaExternalMemory`. 
+To eliminate PCIe memory transfer bottlenecks between the compute device and the presentation layer, the application utilizes `VK_KHR_external_memory`.
+Rendered frames are computed directly into Vulkan swapchain images that are mapped to CUDA memory via `cudaExternalMemory`.
 Execution synchronization is maintained using external semaphores, ensuring minimal latency and strict execution ordering between the CUDA compute kernels and the Vulkan presentation pipeline.
 
 ### Data-Oriented Scene Transpilation: SoA vs AoS
 
-Polymorphic object hierarchies and materials present performance issues for SIMT execution models due to branching divergence and virtual function overhead. 
-To resolve this, a CPU-side transpilation phase flattens scene graphs into contiguous array structures. 
+Polymorphic object hierarchies and materials present performance issues for SIMT execution models due to branching divergence and virtual function overhead.
+To resolve this, a CPU-side transpilation phase flattens scene graphs into contiguous array structures.
 Bounding Volume Hierarchies (BVH), primitives (spheres, quadrilaterals, moving geometries), and material definitions are packed into optimal memory layouts before transfer to device memory.
 
 Furthermore, critical ray state tracking heavily utilizes the **Structure of Arrays (SoA)** paradigm over the traditional **Array of Structures (AoS)**. This ensures fully coalesced global memory accesses across CUDA warps.
@@ -95,10 +92,9 @@ SoA Memory Layout (Contiguous):
                                               One fully coalesced fetch. 100% bandwidth usage.
 ```
 
-
 ### Bounding Volume Hierarchy Acceleration
 
-Intersection calculations are accelerated using a custom BVH implementation. The spatial partitioning algorithm reduces ray-primitive intersection complexity from O(N) to O(log N). 
+Intersection calculations are accelerated using a custom BVH implementation. The spatial partitioning algorithm reduces ray-primitive intersection complexity from O(N) to O(log N).
 The GPU traversal kernel utilizes a flat-array representation of the BVH, employing iterative traversal with a local stack to avoid recursion constraints inherent to device kernels.
 
 ```cpp
@@ -140,11 +136,10 @@ __device__ inline bool hit_linear_bvh(...) {
 
 ## Interactive Application
 
-The project includes a fully interactive UI built with ImGui. It allows dynamic switching between the multi-threaded CPU renderer and the CUDA backend. 
+The project includes a fully interactive UI built with ImGui. It allows dynamic switching between the multi-threaded CPU renderer and the CUDA backend.
 Users can select predefined scenes, adjust camera parameters (field of view, position, depth of field), and modify rendering settings (samples per pixel, maximum bounce depth) in real time.
 
 <img width="1185" height="915" alt="image" src="https://github.com/user-attachments/assets/1615ec1b-5008-4dfd-a967-c9a94fbc5efe" />
-
 
 ## Build Instructions
 
@@ -164,5 +159,3 @@ cmake ..
 make -j
 ./main
 ```
-
-

@@ -10,6 +10,7 @@
 #define STBI_FAILURE_USERMSG
 #include "stb_image.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 
@@ -77,8 +78,8 @@ public:
     static unsigned char magenta[] = {255, 0, 255};
     if (bdata == nullptr) return magenta;
 
-    x = clamp(x, 0, image_width);
-    y = clamp(y, 0, image_height);
+    x = std::clamp(x, 0, image_width - 1);
+    y = std::clamp(y, 0, image_height - 1);
 
     return bdata + y * bytes_per_scanline + x * bytes_per_pixel;
   }
@@ -91,12 +92,7 @@ private:
   int image_height = 0;           // Loaded image height
   int bytes_per_scanline = 0;
 
-  static int clamp(int x, int low, int high) {
-    // Return the value clamped to the range [low, high).
-    if (x < low) return low;
-    if (x < high) return x;
-    return high - 1;
-  }
+
 
   static unsigned char float_to_byte(float value) {
     if (value <= 0.0) return 0;

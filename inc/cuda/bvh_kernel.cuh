@@ -3,12 +3,10 @@
 #include "ray.cuh"
 #include "vec.cuh"
 
-__device__ inline vec3_gpu make_vec3_gpu(const Vec3f& v) {
-  return vec3_gpu{v.x, v.y, v.z};
-}
+__device__ inline vec3_gpu make_vec3_gpu(const Vec3f& v) { return vec3_gpu{v.x, v.y, v.z}; }
 
-__device__ inline bool aabb_hit(const Vec3f& aabb_min, const Vec3f& aabb_max,
-                                const ray_gpu& r, float t_min, float t_max) {
+__device__ inline bool aabb_hit(const Vec3f& aabb_min, const Vec3f& aabb_max, const ray_gpu& r, float t_min,
+                                float t_max) {
   for (int a = 0; a < 3; a++) {
     // Evaluate slab intersections per axis
     float invD = 1.0f / r.direction()[a];
@@ -28,10 +26,8 @@ __device__ inline bool aabb_hit(const Vec3f& aabb_min, const Vec3f& aabb_max,
   return true;
 }
 // 2. The Union Unpacker & Intersection Logic
-__device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
-                                     float t_min, float t_max,
-                                     HitRecordGPU& rec,
-                                     curandState* local_rand_state) {
+__device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r, float t_min, float t_max,
+                                     HitRecordGPU& rec, curandState* local_rand_state) {
 
   if (prim.type == PrimitiveType::SPHERE) {
     // --- Unpack & Math Sphere ---
@@ -158,8 +154,7 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
     float ray_length = r.direction().length();
     float distance_inside_boundary = (t2 - t1) * ray_length;
-    float hit_distance = prim.volume_sphere.neg_inv_density *
-                         logf(curand_uniform(local_rand_state));
+    float hit_distance = prim.volume_sphere.neg_inv_density * logf(curand_uniform(local_rand_state));
 
     if (hit_distance > distance_inside_boundary) return false;
 
@@ -173,16 +168,46 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     rec.material_id = prim.material_id;
     return true;
 
+  } else if (prim.type == PrimitiveType::MOVING_QUAD) {
+    vec3_gpu Q_start = make_vec3_gpu(prim.moving_quad.Q_start);
+    vec3_gpu Q_vec = make_vec3_gpu(prim.moving_quad.Q_vec);
+    vec3_gpu Q_current = Q_start + Q_vec * r.time();
+
+    float D_current = prim.moving_quad.D_start + prim.moving_quad.D_vec * r.time();
+    vec3_gpu normal = make_vec3_gpu(prim.moving_quad.normal);
+    vec3_gpu w = make_vec3_gpu(prim.moving_quad.w);
+
+    float denom = dot(normal, r.direction());
+    if (fabsf(denom) < 1e-8f) return false;
+
+    float t = (D_current - dot(normal, r.origin())) / denom;
+    if (t < t_min || t > t_max) return false;
+
+    vec3_gpu intersection = r.at(t);
+    vec3_gpu planar_hitpt_vector = intersection - Q_current;
+    float alpha = dot(w, cross(planar_hitpt_vector, make_vec3_gpu(prim.moving_quad.v)));
+    float beta = dot(w, cross(make_vec3_gpu(prim.moving_quad.u), planar_hitpt_vector));
+
+    if (alpha < 0.0f || alpha > 1.0f || beta < 0.0f || beta > 1.0f) return false;
+
+    rec.t = t;
+    rec.p = {intersection.x(), intersection.y(), intersection.z()};
+    rec.material_id = prim.material_id;
+    rec.u = alpha;
+    rec.v = beta;
+    rec.front_face = dot(r.direction(), normal) < 0.0f;
+    vec3_gpu final_normal = rec.front_face ? normal : -normal;
+    rec.normal = {final_normal.x(), final_normal.y(), final_normal.z()};
+    return true;
+
   } else if (prim.type == PrimitiveType::VOLUME_BOX) {
     vec3_gpu r_o = r.origin() - make_vec3_gpu(prim.volume_box.offset);
     float s_theta = prim.volume_box.sin_theta;
     float c_theta = prim.volume_box.cos_theta;
 
-    vec3_gpu origin(c_theta * r_o.x() - s_theta * r_o.z(), r_o.y(),
-                    s_theta * r_o.x() + c_theta * r_o.z());
+    vec3_gpu origin(c_theta * r_o.x() - s_theta * r_o.z(), r_o.y(), s_theta * r_o.x() + c_theta * r_o.z());
     vec3_gpu r_d = r.direction();
-    vec3_gpu dir(c_theta * r_d.x() - s_theta * r_d.z(), r_d.y(),
-                 s_theta * r_d.x() + c_theta * r_d.z());
+    vec3_gpu dir(c_theta * r_d.x() - s_theta * r_d.z(), r_d.y(), s_theta * r_d.x() + c_theta * r_d.z());
     ray_gpu local_ray(origin, dir, r.time());
 
     Vec3f local_min = prim.volume_box.local_min;
@@ -213,8 +238,7 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
     float ray_length = r.direction().length();
     float distance_inside_boundary = (t2 - t1) * ray_length;
-    float hit_distance = prim.volume_box.neg_inv_density *
-                         logf(curand_uniform(local_rand_state));
+    float hit_distance = prim.volume_box.neg_inv_density * logf(curand_uniform(local_rand_state));
 
     if (hit_distance > distance_inside_boundary) return false;
 
@@ -231,11 +255,9 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
   return false;
 }
 
-__device__ inline bool hit_linear_bvh(const LinearBVHNode* bvh_nodes,
-                                      const PrimitiveGPU* primitives,
-                                      const ray_gpu& ray, float t_min,
-                                      float t_max, HitRecordGPU& rec,
-                                      curandState* local_rand_state) {
+__device__ inline bool hit_linear_bvh(const cuda::span<LinearBVHNode> bvh_nodes,
+                                      const cuda::span<PrimitiveGPU> primitives, const ray_gpu& ray, float t_min,
+                                      float t_max, HitRecordGPU& rec, curandState* local_rand_state) {
   int stack[64];
   int stack_ptr = 0;
 
@@ -255,8 +277,7 @@ __device__ inline bool hit_linear_bvh(const LinearBVHNode* bvh_nodes,
       HitRecordGPU temp_rec;
       const PrimitiveGPU& prim = primitives[node.primitive_offset];
 
-      if (hit_primitive(prim, ray, t_min, closest_so_far, temp_rec,
-                        local_rand_state)) {
+      if (hit_primitive(prim, ray, t_min, closest_so_far, temp_rec, local_rand_state)) {
         hit_anything = true;
         closest_so_far = temp_rec.t;
         rec = temp_rec;

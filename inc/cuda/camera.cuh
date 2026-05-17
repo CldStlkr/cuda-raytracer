@@ -59,7 +59,7 @@ public:
 
   // get_ray now takes the random state
   __device__ ray_gpu get_ray(float s, float t,
-                             curandState *local_rand_state) const {
+                             curandState* local_rand_state) const {
     point3_gpu pixel = pixel00_loc + s * pixel_delta_u + t * pixel_delta_v;
 
     // Shoot rays from a random point on the lens disk
@@ -85,8 +85,8 @@ private:
   point3_gpu pixel00_loc;
   vec3_gpu pixel_delta_u;
   vec3_gpu pixel_delta_v;
-  vec3_gpu defocus_disk_u; // NEW
-  vec3_gpu defocus_disk_v; // NEW
+  vec3_gpu defocus_disk_u;
+  vec3_gpu defocus_disk_v;
 };
 
 #endif

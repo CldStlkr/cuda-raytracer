@@ -12,52 +12,110 @@ set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+
+
+add_custom_command(
+    OUTPUT  ${SHADER_BIN_DIR}/fullscreen.vert.spv
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/fullscreen.vert
+                                       -o ${SHADER_BIN_DIR}/fullscreen.vert.spv
+    DEPENDS ${SHADER_SRC_DIR}/fullscreen.vert
+    COMMENT "Compiling fullscreen.vert → SPIR-V"
+)
+
+add_custom_command(
+    OUTPUT  ${SHADER_BIN_DIR}/tonemap.frag.spv
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/tonemap.frag
+                                       -o ${SHADER_BIN_DIR}/tonemap.frag.spv
+    DEPENDS ${SHADER_SRC_DIR}/tonemap.frag
+    COMMENT "Compiling tonemap.frag → SPIR-V"
+)
+
+# ---------- Vulkan ----------
+# Hint to the local SDK in case system Vulkan headers are stale
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/vulkansdk/1.4.341.1/x86_64")
+find_package(Vulkan REQUIRED)
+
+# glslc lives inside the SDK; fall back to explicit path if CMake didn't find it
+if(NOT Vulkan_GLSLC_EXECUTABLE)
+    set(Vulkan_GLSLC_EXECUTABLE "$ENV{HOME}/vulkansdk/1.4.341.1/x86_64/bin/glslc")
+endif()
+message(STATUS "glslc: ${Vulkan_GLSLC_EXECUTABLE}")
+
+# ---------- GLFW & CUDA ----------
 find_package(glfw3 3.3 REQUIRED)
-find_package(OpenGL REQUIRED)
-
-
 find_package(CUDAToolkit REQUIRED)
 
-# ---------- GLAD ----------
-add_library(glad STATIC extern/glad/src/gl.c)
-target_include_directories(glad PUBLIC extern/glad/include)
-
-# ---------- ImGui ----------
+# ---------- ImGui (Vulkan backend) ----------
 file(GLOB IMGUI_SRC
     extern/imgui/*.cpp
     extern/imgui/backends/imgui_impl_glfw.cpp
-    extern/imgui/backends/imgui_impl_opengl3.cpp
+    extern/imgui/backends/imgui_impl_vulkan.cpp
 )
 add_library(imgui STATIC ${IMGUI_SRC})
 target_include_directories(imgui PUBLIC extern/imgui extern/imgui/backends)
-target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
+target_link_libraries(imgui PUBLIC Vulkan::Vulkan glfw)
 
-# ----------- STB_IMAGE -------
-target_include_directories(glad PUBLIC extern/stb-image)
+# ---------- SPIR-V shader compilation ----------
+set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/shaders)
+set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/shaders)
+file(MAKE_DIRECTORY ${SHADER_BIN_DIR})
+
+add_custom_command(
+    OUTPUT  ${SHADER_BIN_DIR}/fullscreen.vert.spv
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/fullscreen.vert
+                                       -o ${SHADER_BIN_DIR}/fullscreen.vert.spv
+    DEPENDS ${SHADER_SRC_DIR}/fullscreen.vert
+    COMMENT "Compiling fullscreen.vert → SPIR-V"
+)
+
+add_custom_command(
+    OUTPUT  ${SHADER_BIN_DIR}/tonemap.frag.spv
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_SRC_DIR}/tonemap.frag
+                                       -o ${SHADER_BIN_DIR}/tonemap.frag.spv
+    DEPENDS ${SHADER_SRC_DIR}/tonemap.frag
+    COMMENT "Compiling tonemap.frag → SPIR-V"
+)
+
+add_custom_target(shaders ALL DEPENDS
+    ${SHADER_BIN_DIR}/fullscreen.vert.spv
+    ${SHADER_BIN_DIR}/tonemap.frag.spv
+)
 
 # ---------- Executable ----------
 add_executable(main
     src/main.cpp
+    src/vulkan_app.cpp
     src/cuda_renderer.cu
     src/cuda_structs.cpp
     src/stb_image_impl.cpp
 )
 
-target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR}/inc /usr/local/cuda/include/cccl)
+# shaders must be compiled before the executable is linked
+add_dependencies(main shaders)
 
-# Link libraries with proper order
-target_link_libraries(main PRIVATE
-    imgui
-    glad
-    glfw
-    OpenGL::GL
-    CUDA::cudart
+target_include_directories(main PRIVATE
+    ${CMAKE_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/extern/stb-image
+    /usr/local/cuda/include/cccl/thrust
 )
 
+# Tell the C++ code where to find the compiled .spv files at runtime
+target_compile_definitions(main PRIVATE
+    SHADER_DIR="${SHADER_BIN_DIR}/"
+)
 
-# Compiler-specific options
+target_link_libraries(main PRIVATE
+    imgui
+    glfw
+    Vulkan::Vulkan
+    CUDA::cudart
+    CUDA::cuda_driver   # needed for cudaImportExternalMemory, cudaExternalMemory*
+)
+
 if(MSVC)
-  target_compile_options(main PRIVATE /W4)
+    target_compile_options(main PRIVATE /W4)
 else()
-  target_compile_options(main PRIVATE -Wall -Wextra)
+    target_compile_options(main PRIVATE -Wall -Wextra)
 endif()

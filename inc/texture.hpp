@@ -10,16 +10,16 @@
 class texture {
 public:
   virtual ~texture() = default;
-  virtual color value(double u, double v, const point3 &p) const = 0;
+  virtual color value(double u, double v, const point3& p) const = 0;
 };
 
 class solid_color : public texture {
 public:
-  solid_color(const color &albedo) : albedo{albedo} {}
+  solid_color(const color& albedo) : albedo{albedo} {}
   solid_color(double red, double green, double blue)
       : solid_color{color(red, green, blue)} {}
   color value([[maybe_unused]] double u, [[maybe_unused]] double v,
-              [[maybe_unused]] const point3 &p) const override {
+              [[maybe_unused]] const point3& p) const override {
     return albedo;
   }
 
@@ -33,11 +33,11 @@ public:
                   std::shared_ptr<texture> odd)
       : inv_scale(1.0 / scale), even(even), odd(odd) {}
 
-  checker_texture(double scale, const color &c1, const color &c2)
+  checker_texture(double scale, const color& c1, const color& c2)
       : checker_texture(scale, std::make_shared<solid_color>(c1),
                         std::make_shared<solid_color>(c2)) {}
 
-  color value(double u, double v, const point3 &p) const override {
+  color value(double u, double v, const point3& p) const override {
     auto xInteger = int(std::floor(inv_scale * p.x()));
     auto yInteger = int(std::floor(inv_scale * p.y()));
     auto zInteger = int(std::floor(inv_scale * p.z()));
@@ -55,13 +55,12 @@ public:
 
 class image_texture : public texture {
 public:
-  image_texture(const char *filename) : image(filename) {}
+  image_texture(const char* filename) : image(filename) {}
 
   color value(double u, double v,
-              [[maybe_unused]] const point3 &p) const override {
+              [[maybe_unused]] const point3& p) const override {
     // If we have no texture data, then return solid cyan as a debugging aid.
-    if (image.height() <= 0)
-      return color(0, 1, 1);
+    if (image.height() <= 0) return color(0, 1, 1);
 
     // Clamp input texture coordinates to [0,1] x [1,0]
     u = interval(0, 1).clamp(u);
@@ -85,9 +84,9 @@ public:
   noise_texture(double scale) : scale{scale} {}
 
   color value([[maybe_unused]] double u, [[maybe_unused]] double v,
-              const point3 &p) const override {
+              const point3& p) const override {
     return color(1, 1, 1) * 0.5 *
-           (1 + std::sin(scale * p.z() + 10 * noise.turb(p, 7)));
+           (1 + std::sin(scale * p.z() + 10 * noise.turb(p * scale, 7)));
   }
 
 public:

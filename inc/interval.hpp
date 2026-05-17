@@ -1,6 +1,8 @@
 #ifndef INTERVAL_HPP
 #define INTERVAL_HPP
 
+#include <algorithm>
+
 #include "rt.hpp"
 
 class interval {
@@ -23,16 +25,7 @@ public:
 
   bool surrounds(double x) const { return min < x && x < max; }
 
-  double clamp(double x) const {
-    if (x < min) {
-      return min;
-    }
-    if (x > max) {
-      return max;
-    }
-
-    return x;
-  }
+  double clamp(double x) const { return std::clamp(x, min, max); }
 
   interval expand(double delta) const {
     auto padding = delta / 2;
