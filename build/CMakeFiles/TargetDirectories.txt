@@ -1,5 +1,0 @@
-/home/neel/Dev/personal/cuda-raytracer/build/CMakeFiles/imgui.dir
-/home/neel/Dev/personal/cuda-raytracer/build/CMakeFiles/shaders.dir
-/home/neel/Dev/personal/cuda-raytracer/build/CMakeFiles/main.dir
-/home/neel/Dev/personal/cuda-raytracer/build/CMakeFiles/edit_cache.dir
-/home/neel/Dev/personal/cuda-raytracer/build/CMakeFiles/rebuild_cache.dir

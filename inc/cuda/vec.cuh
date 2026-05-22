@@ -108,9 +108,7 @@ __device__ inline vec3_gpu random_in_unit_sphere(RNG& rng) {
   return p;
 }
 
-__device__ inline vec3_gpu random_unit_vector(RNG& rng) {
-  return unit_vector(random_in_unit_sphere(rng));
-}
+__device__ inline vec3_gpu random_unit_vector(RNG& rng) { return unit_vector(random_in_unit_sphere(rng)); }
 
 __device__ inline vec3_gpu random_in_unit_disk(RNG& rng) {
   vec3_gpu p;

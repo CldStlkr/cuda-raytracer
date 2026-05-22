@@ -1,6 +1,7 @@
 Diagnostics:
   Suppress:
     - module_odr_violation_function
+    - deduction_guide_target_attr
 
 CompileFlags:
   Add:

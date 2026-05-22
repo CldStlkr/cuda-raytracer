@@ -5,9 +5,8 @@
 
 // Returns t_near of the ray-AABB intersection, or 1e30f on miss.
 // inv_dir must be precomputed as 1/ray.direction() per component.
-__device__ inline float aabb_hit_tmin(const vec3_gpu& aabb_min, const vec3_gpu& aabb_max,
-                                       const vec3_gpu& inv_dir, const vec3_gpu& ray_orig,
-                                       float t_min, float t_max) {
+__device__ inline float aabb_hit_tmin(const vec3_gpu& aabb_min, const vec3_gpu& aabb_max, const vec3_gpu& inv_dir,
+                                      const vec3_gpu& ray_orig, float t_min, float t_max) {
   float t0 = (aabb_min.x() - ray_orig.x()) * inv_dir.x();
   float t1 = (aabb_max.x() - ray_orig.x()) * inv_dir.x();
   t_min = fmaxf(t_min, fminf(t0, t1));
@@ -273,19 +272,21 @@ __device__ inline bool hit_linear_bvh(const cuda::span<LinearBVHNode> bvh_nodes,
         rec = temp_rec;
       }
     } else { // Interior: test both children, push misses, process nearer first
-      int left  = node_idx + 1;
+      int left = node_idx + 1;
       int right = node.second_child_offset;
 
-      float t_left  = aabb_hit_tmin(bvh_nodes[left].aabb_min,  bvh_nodes[left].aabb_max,  inv_dir, ray_orig, t_min, closest_so_far);
-      float t_right = aabb_hit_tmin(bvh_nodes[right].aabb_min, bvh_nodes[right].aabb_max, inv_dir, ray_orig, t_min, closest_so_far);
+      float t_left =
+          aabb_hit_tmin(bvh_nodes[left].aabb_min, bvh_nodes[left].aabb_max, inv_dir, ray_orig, t_min, closest_so_far);
+      float t_right =
+          aabb_hit_tmin(bvh_nodes[right].aabb_min, bvh_nodes[right].aabb_max, inv_dir, ray_orig, t_min, closest_so_far);
 
       // Push farther child first so nearer child is popped first (LIFO)
       if (t_left > t_right) {
-        if (t_left  < 1e30f) stack[stack_ptr++] = left;
+        if (t_left < 1e30f) stack[stack_ptr++] = left;
         if (t_right < 1e30f) stack[stack_ptr++] = right;
       } else {
         if (t_right < 1e30f) stack[stack_ptr++] = right;
-        if (t_left  < 1e30f) stack[stack_ptr++] = left;
+        if (t_left < 1e30f) stack[stack_ptr++] = left;
       }
     }
   }

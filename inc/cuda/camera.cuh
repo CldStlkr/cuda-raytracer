@@ -16,8 +16,7 @@ public:
   vec3_gpu vup = vec3_gpu(0.0f, 1.0f, 0.0f);
 
   float defocus_angle = 0.0f; // Variation angle of rays through each pixel
-  float focus_dist =
-      10.0f; // Distance from camera lookfrom point to plane of perfect focus
+  float focus_dist = 10.0f;   // Distance from camera lookfrom point to plane of perfect focus
 
   float time0 = 0.0f;
   float time1 = 0.0f;
@@ -33,8 +32,7 @@ public:
     float theta = vfov * (M_PI / 180.0f);
     float h = tanf(theta / 2.0f);
     float viewport_height = 2.0f * h * focus_dist;
-    float viewport_width =
-        viewport_height * (float(image_width) / image_height);
+    float viewport_width = viewport_height * (float(image_width) / image_height);
 
     vec3_gpu w = normalize(lookfrom - lookat);
     vec3_gpu u = normalize(cross(vup, w));
@@ -46,13 +44,11 @@ public:
     pixel_delta_u = viewport_u / float(image_width);
     pixel_delta_v = viewport_v / float(image_height);
 
-    point3_gpu viewport_upper_left =
-        center - (focus_dist * w) - viewport_u / 2.0f - viewport_v / 2.0f;
+    point3_gpu viewport_upper_left = center - (focus_dist * w) - viewport_u / 2.0f - viewport_v / 2.0f;
     pixel00_loc = viewport_upper_left + 0.5f * (pixel_delta_u + pixel_delta_v);
 
     // Calculate the camera defocus disk basis vectors
-    float defocus_radius =
-        focus_dist * tanf((defocus_angle / 2.0f) * (M_PI / 180.0f));
+    float defocus_radius = focus_dist * tanf((defocus_angle / 2.0f) * (M_PI / 180.0f));
     defocus_disk_u = u * defocus_radius;
     defocus_disk_v = v * defocus_radius;
   }
