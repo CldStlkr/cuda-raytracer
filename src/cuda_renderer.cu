@@ -6,56 +6,55 @@
 #include "cuda_structs.hpp"
 
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
 
+#include <thrust/count.h>
 #include <thrust/execution_policy.h>
-#include <thrust/sequence.h>
+#include <thrust/iterator/transform_iterator.h>
+#include <thrust/scan.h>
 
 #include <stdio.h>
 
-__global__ __launch_bounds__(256, 2) void generate_rays(PathStateSOA paths, camera_gpu cam, curandState* rand_state,
-                                                        int width, int height, int batch_size) {
+struct BoolToInt {
+  __device__ int operator()(bool b) const { return b ? 1 : 0; }
+};
+
+// sample_base: global sample index of the first sample in this batch (b * BATCH_SIZE).
+__global__ __launch_bounds__(256, 2) void generate_rays(PathStateSOA paths, camera_gpu cam,
+                                                        int width, int height, int batch_size, int sample_base) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int total_rays = width * height * batch_size;
   if (idx >= total_rays) return;
 
   int pixel_index = idx / batch_size;
+  int sample_in_batch = idx % batch_size;
+  int global_sample = sample_base + sample_in_batch;
   int i = pixel_index % width;
   int j = pixel_index / width;
 
-  curandState local_rand = rand_state[idx];
-  float u = float(i) + (curand_uniform(&local_rand) - 0.5f);
-  float v = float(j) + (curand_uniform(&local_rand) - 0.5f);
+  RNG rng(uint32_t(pixel_index), uint32_t(global_sample), 0u, 0u);
+  float u = float(i) + (rng.next_f() - 0.5f);
+  float v = float(j) + (rng.next_f() - 0.5f);
 
-  ray_gpu r = cam.get_ray(u, v, &local_rand);
-  paths.ray_origin[idx] = r.origin();
-  paths.ray_dir[idx] = r.direction();
-  paths.ray_time[idx] = r.time();
-  paths.attenuation[idx] = vec3_gpu(1.0f, 1.0f, 1.0f);
-  paths.color[idx] = vec3_gpu(0.0f, 0.0f, 0.0f);
-  paths.pixel_index[idx] = pixel_index;
-  paths.depth[idx] = 0;
-  paths.alive[idx] = true;
-
-  rand_state[idx] = local_rand;
+  ray_gpu r = cam.get_ray(u, v, rng);
+  paths.ray_origin[idx]    = r.origin();
+  paths.ray_dir[idx]       = r.direction();
+  paths.ray_time[idx]      = r.time();
+  paths.attenuation[idx]   = vec3_gpu(1.0f, 1.0f, 1.0f);
+  paths.pixel_index[idx]   = pixel_index;
+  paths.sample_index[idx]  = global_sample;
+  paths.depth[idx]         = 0;
 }
 
-__global__ void render_init(int total_rays, curandState* rand_state) {
-  int idx = threadIdx.x + blockIdx.x * blockDim.x;
-  if (idx >= total_rays) return;
-  curand_init(1984, idx, 0, &rand_state[idx]);
-}
-
-__global__ void intersect_bvh(PathStateSOA paths, HitResultSOA hits, int* active_indices, int num_active,
-                              const cuda::span<LinearBVHNode> bvh_nodes, const cuda::span<PrimitiveGPU> primitives,
-                              curandState* rand_state) {
+__global__ void intersect_bvh(PathStateSOA paths, HitResultSOA hits, int num_active,
+                              const cuda::span<LinearBVHNode> bvh_nodes, const cuda::span<PrimitiveGPU> primitives) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_active) return;
-  int path_idx = active_indices[idx];
 
-  ray_gpu r(paths.ray_origin[path_idx], paths.ray_dir[path_idx], paths.ray_time[path_idx]);
+  RNG rng(uint32_t(paths.pixel_index[idx]), uint32_t(paths.sample_index[idx]),
+          uint32_t(paths.depth[idx]), 1u);
+  ray_gpu r(paths.ray_origin[idx], paths.ray_dir[idx], paths.ray_time[idx]);
   HitRecordGPU rec;
-  bool hit = hit_linear_bvh(bvh_nodes, primitives, r, 0.001f, 1e20f, rec, &rand_state[path_idx]);
+  bool hit = hit_linear_bvh(bvh_nodes, primitives, r, 0.001f, 1e20f, rec, rng);
 
   hits.hit_anything[idx] = hit;
   if (hit) {
@@ -147,97 +146,106 @@ __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, c
   return vec3_gpu(0, 0, 0);
 }
 
-__global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int* active_indices, int num_active,
+// shade_kernel: all paths in [0..num_active-1] are alive (guaranteed by compaction).
+// Dead paths write alive=false and atomicAdd their contribution to accum_buffer.
+// Surviving paths update their ray in place, increment depth, and write alive=true.
+__global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int num_active,
                              cuda::span<MaterialGPU> materials, cuda::span<TextureGPU> textures,
                              cuda::span<PerlinDataGPU> perlin, cuda::span<unsigned char> images,
-                             curandState* rand_state, int* next_active, int* next_count, camera_gpu cam) {
+                             vec3_gpu* accum_buffer, camera_gpu cam) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_active) return;
-  int path_idx = active_indices[idx];
-  if (!paths.alive[path_idx]) return;
 
-  if (hits.hit_anything[idx]) {
-    MaterialGPU mat = materials[hits.hit_material_id[idx]];
-    vec3_gpu attenuation;
-    ray_gpu scattered;
-    point3_gpu rec_p = hits.hit_p[idx];
-    vec3_gpu rec_normal = hits.hit_normal[idx];
-    float rec_u = hits.hit_u[idx], rec_v = hits.hit_v[idx];
-    bool rec_front_face = hits.hit_front_face[idx];
+  if (!hits.hit_anything[idx]) {
+    vec3_gpu contrib = paths.attenuation[idx] * cam.background;
+    int pix = paths.pixel_index[idx];
+    atomicAdd(&accum_buffer[pix].e[0], contrib.x());
+    atomicAdd(&accum_buffer[pix].e[1], contrib.y());
+    atomicAdd(&accum_buffer[pix].e[2], contrib.z());
+    paths.alive[idx] = false;
+    return;
+  }
 
-    if (mat.type == MaterialType::DIFFUSE_LIGHT) {
-      paths.color[path_idx] += paths.attenuation[path_idx] *
-                               get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
-      paths.alive[path_idx] = false;
-      return;
-    }
+  MaterialGPU mat = materials[hits.hit_material_id[idx]];
+  point3_gpu rec_p = hits.hit_p[idx];
+  vec3_gpu rec_normal = hits.hit_normal[idx];
+  float rec_u = hits.hit_u[idx], rec_v = hits.hit_v[idx];
+  bool rec_front_face = hits.hit_front_face[idx];
 
-    curandState local_rand = rand_state[path_idx];
-    bool is_scattered = false;
-    if (mat.type == MaterialType::LAMBERTIAN) {
+  if (mat.type == MaterialType::DIFFUSE_LIGHT) {
+    vec3_gpu contrib = paths.attenuation[idx] *
+                       get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    int pix = paths.pixel_index[idx];
+    atomicAdd(&accum_buffer[pix].e[0], contrib.x());
+    atomicAdd(&accum_buffer[pix].e[1], contrib.y());
+    atomicAdd(&accum_buffer[pix].e[2], contrib.z());
+    paths.alive[idx] = false;
+    return;
+  }
 
-      vec3_gpu scatter_dir = rec_normal + random_unit_vector(&local_rand);
+  RNG rng(uint32_t(paths.pixel_index[idx]), uint32_t(paths.sample_index[idx]),
+          uint32_t(paths.depth[idx]), 2u);
+  vec3_gpu attenuation;
+  ray_gpu scattered;
+  bool is_scattered = false;
 
-      if (scatter_dir.length_squared() < 1e-8f) scatter_dir = rec_normal;
-      scattered = ray_gpu(rec_p, scatter_dir, paths.ray_time[path_idx]);
-      attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
-      is_scattered = true;
+  if (mat.type == MaterialType::LAMBERTIAN) {
+    vec3_gpu scatter_dir = rec_normal + random_unit_vector(rng);
+    if (scatter_dir.length_squared() < 1e-8f) scatter_dir = rec_normal;
+    scattered = ray_gpu(rec_p, scatter_dir, paths.ray_time[idx]);
+    attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    is_scattered = true;
 
-    } else if (mat.type == MaterialType::METAL) {
+  } else if (mat.type == MaterialType::METAL) {
+    vec3_gpu reflected = reflect(unit_vector(paths.ray_dir[idx]), rec_normal);
+    scattered = ray_gpu(rec_p, reflected + mat.fuzz * random_unit_vector(rng), paths.ray_time[idx]);
+    attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    is_scattered = (dot(scattered.direction(), rec_normal) > 0);
 
-      vec3_gpu reflected = reflect(unit_vector(paths.ray_dir[path_idx]), rec_normal);
-      scattered = ray_gpu(rec_p, reflected + mat.fuzz * random_unit_vector(&local_rand), paths.ray_time[path_idx]);
-      attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
-      is_scattered = (dot(scattered.direction(), rec_normal) > 0);
+  } else if (mat.type == MaterialType::DIELECTRIC) {
+    attenuation = vec3_gpu(1.0, 1.0, 1.0);
+    float refraction_ratio = rec_front_face ? (1.0f / mat.ref_idx) : mat.ref_idx;
+    vec3_gpu unit_direction = unit_vector(paths.ray_dir[idx]);
+    float cos_theta = fminf(dot(-unit_direction, rec_normal), 1.0f);
+    float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
+    bool cannot_refract = refraction_ratio * sin_theta > 1.0f;
+    vec3_gpu direction;
+    if (cannot_refract || reflectance(cos_theta, refraction_ratio) > rng.next_f())
+      direction = reflect(unit_direction, rec_normal);
+    else
+      direction = refract(unit_direction, rec_normal, refraction_ratio);
+    scattered = ray_gpu(rec_p, direction, paths.ray_time[idx]);
+    is_scattered = true;
 
-    } else if (mat.type == MaterialType::DIELECTRIC) {
+  } else if (mat.type == MaterialType::ISOTROPIC) {
+    scattered = ray_gpu(rec_p, random_unit_vector(rng), paths.ray_time[idx]);
+    attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    is_scattered = true;
+  }
 
-      attenuation = vec3_gpu(1.0, 1.0, 1.0);
-      float refraction_ratio = rec_front_face ? (1.0f / mat.ref_idx) : mat.ref_idx;
-      vec3_gpu unit_direction = unit_vector(paths.ray_dir[path_idx]);
-      float cos_theta = fminf(dot(-unit_direction, rec_normal), 1.0f);
-      float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
-      bool cannot_refract = refraction_ratio * sin_theta > 1.0f;
-      vec3_gpu direction;
-
-      if (cannot_refract || reflectance(cos_theta, refraction_ratio) > curand_uniform(&local_rand))
-        direction = reflect(unit_direction, rec_normal);
-      else direction = refract(unit_direction, rec_normal, refraction_ratio);
-
-      scattered = ray_gpu(rec_p, direction, paths.ray_time[path_idx]);
-      is_scattered = true;
-    } else if (mat.type == MaterialType::ISOTROPIC) {
-
-      scattered = ray_gpu(rec_p, random_unit_vector(&local_rand), paths.ray_time[path_idx]);
-      attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
-      is_scattered = true;
-    }
-
-    if (is_scattered) {
-
-      paths.attenuation[path_idx] = paths.attenuation[path_idx] * attenuation;
-      paths.ray_origin[path_idx] = scattered.origin();
-      paths.ray_dir[path_idx] = scattered.direction();
-      int next_idx = atomicAdd(next_count, 1);
-      next_active[next_idx] = path_idx;
-
-    } else {
-      paths.alive[path_idx] = false;
-    }
-    rand_state[path_idx] = local_rand;
+  if (is_scattered) {
+    paths.attenuation[idx] = paths.attenuation[idx] * attenuation;
+    paths.ray_origin[idx]  = scattered.origin();
+    paths.ray_dir[idx]     = scattered.direction();
+    paths.depth[idx]       = paths.depth[idx] + 1;
+    paths.alive[idx]       = true;
   } else {
-    paths.color[path_idx] += paths.attenuation[path_idx] * cam.background;
-    paths.alive[path_idx] = false;
+    paths.alive[idx] = false;
   }
 }
 
-__global__ void accumulate(PathStateSOA paths, vec3_gpu* accum_buffer, int total_rays) {
+// Scatter surviving paths from src to dst using precomputed exclusive-sum scatter indices.
+__global__ void compact_paths(PathStateSOA src, PathStateSOA dst, int* scatter_idx, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= total_rays) return;
-  int pixel_index = paths.pixel_index[idx];
-  atomicAdd(&accum_buffer[pixel_index].e[0], paths.color[idx].x());
-  atomicAdd(&accum_buffer[pixel_index].e[1], paths.color[idx].y());
-  atomicAdd(&accum_buffer[pixel_index].e[2], paths.color[idx].z());
+  if (idx >= n || !src.alive[idx]) return;
+  int d = scatter_idx[idx];
+  dst.ray_origin[d]   = src.ray_origin[idx];
+  dst.ray_dir[d]      = src.ray_dir[idx];
+  dst.ray_time[d]     = src.ray_time[idx];
+  dst.attenuation[d]  = src.attenuation[idx];
+  dst.pixel_index[d]  = src.pixel_index[idx];
+  dst.sample_index[d] = src.sample_index[idx];
+  dst.depth[d]        = src.depth[idx];
 }
 
 __device__ vec3_gpu aces_tonemap(vec3_gpu x) {
@@ -258,14 +266,14 @@ __global__ void finalize(float4* frame_buffer, vec3_gpu* accum_buffer, int total
 }
 
 static void alloc_path_state_soa(PathStateSOA& p, int n) {
-  cudaMalloc(&p.ray_origin, n * sizeof(vec3_gpu));
-  cudaMalloc(&p.ray_dir, n * sizeof(vec3_gpu));
-  cudaMalloc(&p.ray_time, n * sizeof(float));
-  cudaMalloc(&p.attenuation, n * sizeof(vec3_gpu));
-  cudaMalloc(&p.color, n * sizeof(vec3_gpu));
-  cudaMalloc(&p.pixel_index, n * sizeof(int));
-  cudaMalloc(&p.depth, n * sizeof(int));
-  cudaMalloc(&p.alive, n * sizeof(bool));
+  cudaMalloc(&p.ray_origin,   n * sizeof(vec3_gpu));
+  cudaMalloc(&p.ray_dir,      n * sizeof(vec3_gpu));
+  cudaMalloc(&p.ray_time,     n * sizeof(float));
+  cudaMalloc(&p.attenuation,  n * sizeof(vec3_gpu));
+  cudaMalloc(&p.pixel_index,  n * sizeof(int));
+  cudaMalloc(&p.sample_index, n * sizeof(int));
+  cudaMalloc(&p.depth,        n * sizeof(int));
+  cudaMalloc(&p.alive,        n * sizeof(bool));
 }
 
 static void free_path_state_soa(PathStateSOA& p) {
@@ -273,8 +281,8 @@ static void free_path_state_soa(PathStateSOA& p) {
   cudaFree(p.ray_dir);
   cudaFree(p.ray_time);
   cudaFree(p.attenuation);
-  cudaFree(p.color);
   cudaFree(p.pixel_index);
+  cudaFree(p.sample_index);
   cudaFree(p.depth);
   cudaFree(p.alive);
 }
@@ -307,14 +315,21 @@ extern "C" void launch_render(RenderConfig config, cuda::span<LinearBVHNode> h_b
   int width = config.width, height = config.height;
   int BATCH_SIZE = 16, total_rays = width * height * BATCH_SIZE;
 
-  static curandState* d_rand_state = nullptr;
-  static int last_w = 0, last_h = 0;
-  if (!d_rand_state || width != last_w || height != last_h) {
-    if (d_rand_state) cudaFree(d_rand_state);
-    cudaMalloc(&d_rand_state, total_rays * sizeof(curandState));
-    render_init<<<(total_rays + 255) / 256, 256>>>(total_rays, d_rand_state);
-    last_w = width;
-    last_h = height;
+  // Ping-pong path state buffers — persistent across frames, reallocated on resolution change
+  static PathStateSOA d_paths_a = {}, d_paths_b = {};
+  static int* d_scatter_idx = nullptr;
+  static int last_total_rays = 0;
+
+  if (total_rays != last_total_rays) {
+    if (d_scatter_idx) {
+      free_path_state_soa(d_paths_a);
+      free_path_state_soa(d_paths_b);
+      cudaFree(d_scatter_idx);
+    }
+    alloc_path_state_soa(d_paths_a, total_rays);
+    alloc_path_state_soa(d_paths_b, total_rays);
+    cudaMalloc(&d_scatter_idx, total_rays * sizeof(int));
+    last_total_rays = total_rays;
   }
 
   LinearBVHNode* d_bvh;
@@ -363,50 +378,51 @@ extern "C" void launch_render(RenderConfig config, cuda::span<LinearBVHNode> h_b
   }
   cudaMemset(d_accum, 0, width * height * sizeof(vec3_gpu));
 
-  PathStateSOA d_paths;
   HitResultSOA d_hits;
-  alloc_path_state_soa(d_paths, total_rays);
   alloc_hit_result_soa(d_hits, total_rays);
-  int *d_active, *d_next, *d_cnt;
-  cudaMalloc(&d_active, total_rays * sizeof(int));
-  cudaMalloc(&d_next, total_rays * sizeof(int));
-  cudaMalloc(&d_cnt, sizeof(int));
 
-  cuda::span<LinearBVHNode> d_bvh_span = {d_bvh, h_bvh.size()};
-  cuda::span<PrimitiveGPU> d_prims_span = {d_prims, h_prims.size()};
-  cuda::span<MaterialGPU> d_mats_span = {d_mats, h_mats.size()};
-  cuda::span<TextureGPU> d_texs_span = {d_texs, h_texs.size()};
+  cuda::span<LinearBVHNode> d_bvh_span   = {d_bvh, h_bvh.size()};
+  cuda::span<PrimitiveGPU> d_prims_span  = {d_prims, h_prims.size()};
+  cuda::span<MaterialGPU> d_mats_span    = {d_mats, h_mats.size()};
+  cuda::span<TextureGPU> d_texs_span     = {d_texs, h_texs.size()};
   cuda::span<PerlinDataGPU> d_perlin_span = {d_perlin, h_perlin.size()};
-  cuda::span<unsigned char> d_imgs_span = {d_imgs, h_images.size()};
+  cuda::span<unsigned char> d_imgs_span  = {d_imgs, h_images.size()};
 
   int batches = (config.samples_per_pixel + BATCH_SIZE - 1) / BATCH_SIZE;
   for (int b = 0; b < batches; b++) {
-    int cur = std::min(BATCH_SIZE, config.samples_per_pixel - b * BATCH_SIZE);
-    int active = width * height * cur;
-    thrust::sequence(thrust::device, d_active, d_active + active);
-    generate_rays<<<(active + 255) / 256, 256>>>(d_paths, cam, d_rand_state, width, height, cur);
+    PathStateSOA* cur = &d_paths_a;
+    PathStateSOA* nxt = &d_paths_b;
+
+    int cur_spp    = std::min(BATCH_SIZE, config.samples_per_pixel - b * BATCH_SIZE);
+    int sample_base = b * BATCH_SIZE;
+    int active     = width * height * cur_spp;
+
+    generate_rays<<<(active + 255) / 256, 256>>>(*cur, cam, width, height, cur_spp, sample_base);
+
     for (int bounce = 0; bounce < config.max_depth && active > 0; bounce++) {
       cudaMemset(d_hits.hit_anything, 0, active * sizeof(bool));
-      intersect_bvh<<<(active + 255) / 256, 256>>>(d_paths, d_hits, d_active, active, d_bvh_span, d_prims_span,
-                                                   d_rand_state);
-      cudaMemset(d_cnt, 0, sizeof(int));
-      shade_kernel<<<(active + 255) / 256, 256>>>(d_paths, d_hits, d_active, active, d_mats_span, d_texs_span,
-                                                  d_perlin_span, d_imgs_span, d_rand_state, d_next, d_cnt, cam);
-      cudaMemcpy(&active, d_cnt, sizeof(int), cudaMemcpyDeviceToHost);
-      std::swap(d_active, d_next);
+      intersect_bvh<<<(active + 255) / 256, 256>>>(*cur, d_hits, active, d_bvh_span, d_prims_span);
+      shade_kernel<<<(active + 255) / 256, 256>>>(*cur, d_hits, active, d_mats_span, d_texs_span,
+                                                  d_perlin_span, d_imgs_span, d_accum, cam);
+
+      // Compute scatter positions via exclusive prefix sum on survival flags
+      auto alive_int = thrust::make_transform_iterator(cur->alive, BoolToInt{});
+      thrust::exclusive_scan(thrust::device, alive_int, alive_int + active, d_scatter_idx, 0);
+      int new_active = (int)thrust::count(thrust::device, cur->alive, cur->alive + active, true);
+
+      if (new_active > 0)
+        compact_paths<<<(active + 255) / 256, 256>>>(*cur, *nxt, d_scatter_idx, active);
+
+      active = new_active;
+      std::swap(cur, nxt);
     }
-    accumulate<<<(width * height * cur + 255) / 256, 256>>>(d_paths, d_accum, width * height * cur);
   }
 
   finalize<<<(width * height + 255) / 256, 256>>>(config.frame_buffer, d_accum, width * height,
                                                   config.samples_per_pixel);
   cudaDeviceSynchronize();
 
-  free_path_state_soa(d_paths);
   free_hit_result_soa(d_hits);
-  cudaFree(d_active);
-  cudaFree(d_next);
-  cudaFree(d_cnt);
   cudaFree(d_bvh);
   cudaFree(d_prims);
   cudaFree(d_mats);

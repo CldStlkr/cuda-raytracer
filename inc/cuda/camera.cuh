@@ -57,23 +57,20 @@ public:
     defocus_disk_v = v * defocus_radius;
   }
 
-  // get_ray now takes the random state
-  __device__ ray_gpu get_ray(float s, float t,
-                             curandState* local_rand_state) const {
+  __device__ ray_gpu get_ray(float s, float t, RNG& rng) const {
     point3_gpu pixel = pixel00_loc + s * pixel_delta_u + t * pixel_delta_v;
 
-    // Shoot rays from a random point on the lens disk
     point3_gpu ray_origin;
     if (defocus_angle <= 0.0f) {
       ray_origin = center;
     } else {
-      vec3_gpu p = random_in_unit_disk(local_rand_state);
+      vec3_gpu p = random_in_unit_disk(rng);
       vec3_gpu offset = p.x() * defocus_disk_u + p.y() * defocus_disk_v;
       ray_origin = center + offset;
     }
 
     vec3_gpu dir = pixel - ray_origin;
-    float ray_time = time0 + curand_uniform(local_rand_state) * (time1 - time0);
+    float ray_time = time0 + rng.next_f() * (time1 - time0);
     return ray_gpu(ray_origin, dir, ray_time);
   }
 

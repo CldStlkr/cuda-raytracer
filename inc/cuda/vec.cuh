@@ -2,8 +2,8 @@
 #define VEC3_CUD_H
 
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
 #include <math.h>
+#include <stdint.h>
 
 class vec3_gpu {
 public:
@@ -69,27 +69,53 @@ __host__ __device__ inline vec3_gpu cross(const vec3_gpu& u, const vec3_gpu& v) 
 __host__ __device__ inline vec3_gpu unit_vector(const vec3_gpu& v) { return v / v.length(); }
 __host__ __device__ inline vec3_gpu normalize(const vec3_gpu& v) { return unit_vector(v); }
 
-__device__ inline vec3_gpu random_in_unit_sphere(curandState* local_rand_state) {
+// PCG hash for seeding — good avalanche, one multiply+xorshift pair.
+__device__ inline uint32_t pcg_hash(uint32_t x) {
+  x = x * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  return (x >> 22u) ^ x;
+}
+
+// Register-only RNG: state lives entirely in registers, zero global memory I/O.
+// Seeded from (pixel, sample, bounce, stream) where stream distinguishes kernel
+// stages: 0 = generate_rays, 1 = intersect_bvh, 2 = shade_kernel.
+struct RNG {
+  uint64_t state;
+
+  __device__ RNG(uint32_t pixel, uint32_t sample, uint32_t bounce, uint32_t stream) {
+    uint32_t s0 = pcg_hash(pixel ^ pcg_hash(sample));
+    uint32_t s1 = pcg_hash(bounce ^ pcg_hash(stream));
+    state = (uint64_t(s1) << 32) | uint64_t(s0);
+    next_u32(); // warm-up: mix seed into full state
+  }
+
+  __device__ uint32_t next_u32() {
+    uint64_t old = state;
+    state = old * 6364136223846793005ULL + 1442695040888963407ULL;
+    uint32_t xorshifted = uint32_t(((old >> 18u) ^ old) >> 27u);
+    uint32_t rot = uint32_t(old >> 59u);
+    return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
+  }
+
+  __device__ float next_f() { return (next_u32() >> 8) * (1.0f / 16777216.0f); }
+};
+
+__device__ inline vec3_gpu random_in_unit_sphere(RNG& rng) {
   vec3_gpu p;
   do {
-    // Generate random vector in range [-1.0, 1.0] for x, y, z
-    p = 2.0f * vec3_gpu(curand_uniform(local_rand_state), curand_uniform(local_rand_state),
-                        curand_uniform(local_rand_state)) -
-        vec3_gpu(1, 1, 1);
+    p = 2.0f * vec3_gpu(rng.next_f(), rng.next_f(), rng.next_f()) - vec3_gpu(1, 1, 1);
   } while (p.length_squared() >= 1.0f);
   return p;
 }
 
-__device__ inline vec3_gpu random_unit_vector(curandState* local_rand_state) {
-  return unit_vector(random_in_unit_sphere(local_rand_state));
+__device__ inline vec3_gpu random_unit_vector(RNG& rng) {
+  return unit_vector(random_in_unit_sphere(rng));
 }
 
-__device__ inline vec3_gpu random_in_unit_disk(curandState* local_rand_state) {
+__device__ inline vec3_gpu random_in_unit_disk(RNG& rng) {
   vec3_gpu p;
   do {
-    // Generate random vector in range [-1.0, 1.0] for x, y
-    p = 2.0f * vec3_gpu(curand_uniform(local_rand_state), curand_uniform(local_rand_state), 0.0f) -
-        vec3_gpu(1.0f, 1.0f, 0.0f);
+    p = 2.0f * vec3_gpu(rng.next_f(), rng.next_f(), 0.0f) - vec3_gpu(1.0f, 1.0f, 0.0f);
   } while (dot(p, p) >= 1.0f);
   return p;
 }

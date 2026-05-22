@@ -3,32 +3,33 @@
 #include "ray.cuh"
 #include "vec.cuh"
 
-__device__ inline bool aabb_hit(const vec3_gpu& aabb_min, const vec3_gpu& aabb_max, const ray_gpu& r, float t_min,
-                                float t_max) {
-  for (int a = 0; a < 3; a++) {
-    // Evaluate slab intersections per axis
-    float invD = 1.0f / r.direction()[a];
-    float t0 = (aabb_min[a] - r.origin()[a]) * invD;
-    float t1 = (aabb_max[a] - r.origin()[a]) * invD;
+// Returns t_near of the ray-AABB intersection, or 1e30f on miss.
+// inv_dir must be precomputed as 1/ray.direction() per component.
+__device__ inline float aabb_hit_tmin(const vec3_gpu& aabb_min, const vec3_gpu& aabb_max,
+                                       const vec3_gpu& inv_dir, const vec3_gpu& ray_orig,
+                                       float t_min, float t_max) {
+  float t0 = (aabb_min.x() - ray_orig.x()) * inv_dir.x();
+  float t1 = (aabb_max.x() - ray_orig.x()) * inv_dir.x();
+  t_min = fmaxf(t_min, fminf(t0, t1));
+  t_max = fminf(t_max, fmaxf(t0, t1));
 
-    if (invD < 0.0f) {
-      float temp = t0;
-      t0 = t1;
-      t1 = temp;
-    }
-    t_min = t0 > t_min ? t0 : t_min;
-    t_max = t1 < t_max ? t1 : t_max;
+  t0 = (aabb_min.y() - ray_orig.y()) * inv_dir.y();
+  t1 = (aabb_max.y() - ray_orig.y()) * inv_dir.y();
+  t_min = fmaxf(t_min, fminf(t0, t1));
+  t_max = fminf(t_max, fmaxf(t0, t1));
 
-    if (t_max <= t_min) return false;
-  }
-  return true;
+  t0 = (aabb_min.z() - ray_orig.z()) * inv_dir.z();
+  t1 = (aabb_max.z() - ray_orig.z()) * inv_dir.z();
+  t_min = fmaxf(t_min, fminf(t0, t1));
+  t_max = fminf(t_max, fmaxf(t0, t1));
+
+  return (t_max > t_min) ? t_min : 1e30f;
 }
-// 2. The Union Unpacker & Intersection Logic
+
 __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r, float t_min, float t_max,
-                                     HitRecordGPU& rec, curandState* local_rand_state) {
+                                     HitRecordGPU& rec, RNG& rng) {
 
   if (prim.type == PrimitiveType::SPHERE) {
-    // --- Unpack & Math Sphere ---
     vec3_gpu center = prim.sphere.center;
     float radius = prim.sphere.radius;
 
@@ -39,7 +40,6 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     float discriminant = half_b * half_b - a * c;
     if (discriminant < 0) return false;
     float sqrtd = sqrtf(discriminant);
-    // Find nearest root
     float root = (-half_b - sqrtd) / a;
     if (root <= t_min || t_max <= root) {
       root = (-half_b + sqrtd) / a;
@@ -62,7 +62,6 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     rec.material_id = prim.material_id;
     return true;
   } else if (prim.type == PrimitiveType::MOVING_SPHERE) {
-    // --- Unpack & Math Moving Sphere ---
     vec3_gpu center_start = prim.moving_sphere.center_start;
     vec3_gpu center_vec = prim.moving_sphere.center_vec;
     vec3_gpu center = center_start + center_vec * r.time();
@@ -75,7 +74,6 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     float discriminant = half_b * half_b - a * c;
     if (discriminant < 0) return false;
     float sqrtd = sqrtf(discriminant);
-    // Find nearest root
     float root = (-half_b - sqrtd) / a;
     if (root <= t_min || t_max <= root) {
       root = (-half_b + sqrtd) / a;
@@ -98,7 +96,6 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     rec.material_id = prim.material_id;
     return true;
   } else if (prim.type == PrimitiveType::QUAD) {
-    // --- Unpack & Math Quad ---
     vec3_gpu Q = prim.quad.Q;
     vec3_gpu u = prim.quad.u;
     vec3_gpu v = prim.quad.v;
@@ -106,17 +103,14 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     vec3_gpu quad_normal = prim.quad.normal;
     float D = prim.quad.D;
     float denom = dot(quad_normal, r.direction());
-    // Ray is parallel to plane
     if (fabsf(denom) < 1e-8) return false;
     float t = (D - dot(quad_normal, r.origin())) / denom;
     if (t <= t_min || t >= t_max) return false;
     vec3_gpu p = r.at(t);
 
-    // Planar intersection coordinates
     vec3_gpu planar_hitpt = p - Q;
     float alpha = dot(w, cross(planar_hitpt, v));
     float beta = dot(w, cross(u, planar_hitpt));
-    // Is the hit point outside the Quad?
     if (alpha < 0 || alpha > 1 || beta < 0 || beta > 1) return false;
     rec.t = t;
     rec.p = p;
@@ -152,14 +146,14 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
     float ray_length = r.direction().length();
     float distance_inside_boundary = (t2 - t1) * ray_length;
-    float hit_distance = prim.volume_sphere.neg_inv_density * logf(curand_uniform(local_rand_state));
+    float hit_distance = prim.volume_sphere.neg_inv_density * logf(rng.next_f());
 
     if (hit_distance > distance_inside_boundary) return false;
 
     rec.t = t1 + hit_distance / ray_length;
     vec3_gpu p = r.at(rec.t);
     rec.p = p;
-    rec.normal = vec3_gpu(1.0f, 0.0f, 0.0f); // arbitrary
+    rec.normal = vec3_gpu(1.0f, 0.0f, 0.0f);
     rec.front_face = true;
     rec.u = 0.0f;
     rec.v = 0.0f;
@@ -235,13 +229,13 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
     float ray_length = r.direction().length();
     float distance_inside_boundary = (t2 - t1) * ray_length;
-    float hit_distance = prim.volume_box.neg_inv_density * logf(curand_uniform(local_rand_state));
+    float hit_distance = prim.volume_box.neg_inv_density * logf(rng.next_f());
 
     if (hit_distance > distance_inside_boundary) return false;
 
     rec.t = t1 + hit_distance / ray_length;
     rec.p = r.at(rec.t);
-    rec.normal = vec3_gpu(1.0f, 0.0f, 0.0f); // arbitrary
+    rec.normal = vec3_gpu(1.0f, 0.0f, 0.0f);
     rec.front_face = true;
     rec.u = 0.0f;
     rec.v = 0.0f;
@@ -253,35 +247,46 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
 __device__ inline bool hit_linear_bvh(const cuda::span<LinearBVHNode> bvh_nodes,
                                       const cuda::span<PrimitiveGPU> primitives, const ray_gpu& ray, float t_min,
-                                      float t_max, HitRecordGPU& rec, curandState* local_rand_state) {
+                                      float t_max, HitRecordGPU& rec, RNG& rng) {
+  vec3_gpu inv_dir(1.0f / ray.direction().x(), 1.0f / ray.direction().y(), 1.0f / ray.direction().z());
+  vec3_gpu ray_orig = ray.origin();
+
   int stack[64];
   int stack_ptr = 0;
-
-  stack[stack_ptr++] = 0;
   bool hit_anything = false;
   float closest_so_far = t_max;
+
+  // Early exit if root AABB misses
+  if (aabb_hit_tmin(bvh_nodes[0].aabb_min, bvh_nodes[0].aabb_max, inv_dir, ray_orig, t_min, closest_so_far) >= 1e30f)
+    return false;
+  stack[stack_ptr++] = 0;
 
   while (stack_ptr > 0) {
     int node_idx = stack[--stack_ptr];
     const LinearBVHNode& node = bvh_nodes[node_idx];
 
-    if (!aabb_hit(node.aabb_min, node.aabb_max, ray, t_min, closest_so_far)) {
-      continue;
-    }
-
     if (node.n_primitives > 0) { // Leaf
       HitRecordGPU temp_rec;
-      const PrimitiveGPU& prim = primitives[node.primitive_offset];
-
-      if (hit_primitive(prim, ray, t_min, closest_so_far, temp_rec, local_rand_state)) {
+      if (hit_primitive(primitives[node.primitive_offset], ray, t_min, closest_so_far, temp_rec, rng)) {
         hit_anything = true;
         closest_so_far = temp_rec.t;
         rec = temp_rec;
       }
-    } else { // Interior
-      // Push right first so left will be processed first becuase of LIFO
-      stack[stack_ptr++] = node.second_child_offset;
-      stack[stack_ptr++] = node_idx + 1;
+    } else { // Interior: test both children, push misses, process nearer first
+      int left  = node_idx + 1;
+      int right = node.second_child_offset;
+
+      float t_left  = aabb_hit_tmin(bvh_nodes[left].aabb_min,  bvh_nodes[left].aabb_max,  inv_dir, ray_orig, t_min, closest_so_far);
+      float t_right = aabb_hit_tmin(bvh_nodes[right].aabb_min, bvh_nodes[right].aabb_max, inv_dir, ray_orig, t_min, closest_so_far);
+
+      // Push farther child first so nearer child is popped first (LIFO)
+      if (t_left > t_right) {
+        if (t_left  < 1e30f) stack[stack_ptr++] = left;
+        if (t_right < 1e30f) stack[stack_ptr++] = right;
+      } else {
+        if (t_right < 1e30f) stack[stack_ptr++] = right;
+        if (t_left  < 1e30f) stack[stack_ptr++] = left;
+      }
     }
   }
 

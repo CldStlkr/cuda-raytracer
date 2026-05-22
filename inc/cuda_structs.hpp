@@ -190,8 +190,8 @@ struct PathStateSOA {
 
   // Path state
   vec3_gpu* attenuation;
-  vec3_gpu* color;
   int* pixel_index;
+  int* sample_index; // global sample index — used as RNG seed component
   int* depth;
   bool* alive;
 };
