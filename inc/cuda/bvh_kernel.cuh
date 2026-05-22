@@ -3,15 +3,13 @@
 #include "ray.cuh"
 #include "vec.cuh"
 
-__device__ inline vec3_gpu make_vec3_gpu(const Vec3f& v) { return vec3_gpu{v.x, v.y, v.z}; }
-
-__device__ inline bool aabb_hit(const Vec3f& aabb_min, const Vec3f& aabb_max, const ray_gpu& r, float t_min,
+__device__ inline bool aabb_hit(const vec3_gpu& aabb_min, const vec3_gpu& aabb_max, const ray_gpu& r, float t_min,
                                 float t_max) {
   for (int a = 0; a < 3; a++) {
     // Evaluate slab intersections per axis
     float invD = 1.0f / r.direction()[a];
-    float t0 = (((float*)&aabb_min)[a] - r.origin()[a]) * invD;
-    float t1 = (((float*)&aabb_max)[a] - r.origin()[a]) * invD;
+    float t0 = (aabb_min[a] - r.origin()[a]) * invD;
+    float t1 = (aabb_max[a] - r.origin()[a]) * invD;
 
     if (invD < 0.0f) {
       float temp = t0;
@@ -31,7 +29,7 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
   if (prim.type == PrimitiveType::SPHERE) {
     // --- Unpack & Math Sphere ---
-    vec3_gpu center = make_vec3_gpu(prim.sphere.center);
+    vec3_gpu center = prim.sphere.center;
     float radius = prim.sphere.radius;
 
     vec3_gpu oc = r.origin() - center;
@@ -49,13 +47,13 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     }
     rec.t = root;
     vec3_gpu p = r.at(root);
-    rec.p = {p.x(), p.y(), p.z()}; // Convert back to Vec3f for struct storage
+    rec.p = p;
 
     vec3_gpu outward_normal = (p - center) / radius;
     rec.front_face = dot(r.direction(), outward_normal) < 0.0f;
 
     vec3_gpu normal = rec.front_face ? outward_normal : -outward_normal;
-    rec.normal = {normal.x(), normal.y(), normal.z()};
+    rec.normal = normal;
 
     float theta = acosf(-outward_normal.y());
     float phi = atan2f(-outward_normal.z(), outward_normal.x()) + 3.14159265f;
@@ -65,8 +63,8 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     return true;
   } else if (prim.type == PrimitiveType::MOVING_SPHERE) {
     // --- Unpack & Math Moving Sphere ---
-    vec3_gpu center_start = make_vec3_gpu(prim.moving_sphere.center_start);
-    vec3_gpu center_vec = make_vec3_gpu(prim.moving_sphere.center_vec);
+    vec3_gpu center_start = prim.moving_sphere.center_start;
+    vec3_gpu center_vec = prim.moving_sphere.center_vec;
     vec3_gpu center = center_start + center_vec * r.time();
     float radius = prim.moving_sphere.radius;
 
@@ -85,13 +83,13 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     }
     rec.t = root;
     vec3_gpu p = r.at(root);
-    rec.p = {p.x(), p.y(), p.z()}; // Convert back to Vec3f for struct storage
+    rec.p = p;
 
     vec3_gpu outward_normal = (p - center) / radius;
     rec.front_face = dot(r.direction(), outward_normal) < 0.0f;
 
     vec3_gpu normal = rec.front_face ? outward_normal : -outward_normal;
-    rec.normal = {normal.x(), normal.y(), normal.z()};
+    rec.normal = normal;
 
     float theta = acosf(-outward_normal.y());
     float phi = atan2f(-outward_normal.z(), outward_normal.x()) + 3.14159265f;
@@ -101,11 +99,11 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     return true;
   } else if (prim.type == PrimitiveType::QUAD) {
     // --- Unpack & Math Quad ---
-    vec3_gpu Q = make_vec3_gpu(prim.quad.Q);
-    vec3_gpu u = make_vec3_gpu(prim.quad.u);
-    vec3_gpu v = make_vec3_gpu(prim.quad.v);
-    vec3_gpu w = make_vec3_gpu(prim.quad.w);
-    vec3_gpu quad_normal = make_vec3_gpu(prim.quad.normal);
+    vec3_gpu Q = prim.quad.Q;
+    vec3_gpu u = prim.quad.u;
+    vec3_gpu v = prim.quad.v;
+    vec3_gpu w = prim.quad.w;
+    vec3_gpu quad_normal = prim.quad.normal;
     float D = prim.quad.D;
     float denom = dot(quad_normal, r.direction());
     // Ray is parallel to plane
@@ -121,18 +119,18 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     // Is the hit point outside the Quad?
     if (alpha < 0 || alpha > 1 || beta < 0 || beta > 1) return false;
     rec.t = t;
-    rec.p = {p.x(), p.y(), p.z()};
+    rec.p = p;
     rec.u = alpha;
     rec.v = beta;
 
     rec.front_face = dot(r.direction(), quad_normal) < 0.0f;
     vec3_gpu normal = rec.front_face ? quad_normal : -quad_normal;
-    rec.normal = {normal.x(), normal.y(), normal.z()};
+    rec.normal = normal;
     rec.material_id = prim.material_id;
     return true;
 
   } else if (prim.type == PrimitiveType::VOLUME_SPHERE) {
-    vec3_gpu center = make_vec3_gpu(prim.volume_sphere.center);
+    vec3_gpu center = prim.volume_sphere.center;
     float radius = prim.volume_sphere.radius;
 
     vec3_gpu oc = r.origin() - center;
@@ -160,8 +158,8 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
     rec.t = t1 + hit_distance / ray_length;
     vec3_gpu p = r.at(rec.t);
-    rec.p = {p.x(), p.y(), p.z()};
-    rec.normal = {1.0f, 0.0f, 0.0f}; // arbitrary
+    rec.p = p;
+    rec.normal = vec3_gpu(1.0f, 0.0f, 0.0f); // arbitrary
     rec.front_face = true;
     rec.u = 0.0f;
     rec.v = 0.0f;
@@ -169,13 +167,13 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     return true;
 
   } else if (prim.type == PrimitiveType::MOVING_QUAD) {
-    vec3_gpu Q_start = make_vec3_gpu(prim.moving_quad.Q_start);
-    vec3_gpu Q_vec = make_vec3_gpu(prim.moving_quad.Q_vec);
+    vec3_gpu Q_start = prim.moving_quad.Q_start;
+    vec3_gpu Q_vec = prim.moving_quad.Q_vec;
     vec3_gpu Q_current = Q_start + Q_vec * r.time();
 
     float D_current = prim.moving_quad.D_start + prim.moving_quad.D_vec * r.time();
-    vec3_gpu normal = make_vec3_gpu(prim.moving_quad.normal);
-    vec3_gpu w = make_vec3_gpu(prim.moving_quad.w);
+    vec3_gpu normal = prim.moving_quad.normal;
+    vec3_gpu w = prim.moving_quad.w;
 
     float denom = dot(normal, r.direction());
     if (fabsf(denom) < 1e-8f) return false;
@@ -185,23 +183,22 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
 
     vec3_gpu intersection = r.at(t);
     vec3_gpu planar_hitpt_vector = intersection - Q_current;
-    float alpha = dot(w, cross(planar_hitpt_vector, make_vec3_gpu(prim.moving_quad.v)));
-    float beta = dot(w, cross(make_vec3_gpu(prim.moving_quad.u), planar_hitpt_vector));
+    float alpha = dot(w, cross(planar_hitpt_vector, prim.moving_quad.v));
+    float beta = dot(w, cross(prim.moving_quad.u, planar_hitpt_vector));
 
     if (alpha < 0.0f || alpha > 1.0f || beta < 0.0f || beta > 1.0f) return false;
 
     rec.t = t;
-    rec.p = {intersection.x(), intersection.y(), intersection.z()};
+    rec.p = intersection;
     rec.material_id = prim.material_id;
     rec.u = alpha;
     rec.v = beta;
     rec.front_face = dot(r.direction(), normal) < 0.0f;
-    vec3_gpu final_normal = rec.front_face ? normal : -normal;
-    rec.normal = {final_normal.x(), final_normal.y(), final_normal.z()};
+    rec.normal = rec.front_face ? normal : -normal;
     return true;
 
   } else if (prim.type == PrimitiveType::VOLUME_BOX) {
-    vec3_gpu r_o = r.origin() - make_vec3_gpu(prim.volume_box.offset);
+    vec3_gpu r_o = r.origin() - prim.volume_box.offset;
     float s_theta = prim.volume_box.sin_theta;
     float c_theta = prim.volume_box.cos_theta;
 
@@ -210,16 +207,16 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     vec3_gpu dir(c_theta * r_d.x() - s_theta * r_d.z(), r_d.y(), s_theta * r_d.x() + c_theta * r_d.z());
     ray_gpu local_ray(origin, dir, r.time());
 
-    Vec3f local_min = prim.volume_box.local_min;
-    Vec3f local_max = prim.volume_box.local_max;
+    vec3_gpu local_min = prim.volume_box.local_min;
+    vec3_gpu local_max = prim.volume_box.local_max;
 
     float t0_overall = -99999.0f;
     float t1_overall = 99999.0f;
 
     for (int a = 0; a < 3; a++) {
       float invD = 1.0f / local_ray.direction()[a];
-      float t0 = (((float*)&local_min)[a] - local_ray.origin()[a]) * invD;
-      float t1 = (((float*)&local_max)[a] - local_ray.origin()[a]) * invD;
+      float t0 = (local_min[a] - local_ray.origin()[a]) * invD;
+      float t1 = (local_max[a] - local_ray.origin()[a]) * invD;
       if (invD < 0.0f) {
         float temp = t0;
         t0 = t1;
@@ -243,9 +240,8 @@ __device__ inline bool hit_primitive(const PrimitiveGPU& prim, const ray_gpu& r,
     if (hit_distance > distance_inside_boundary) return false;
 
     rec.t = t1 + hit_distance / ray_length;
-    vec3_gpu p = r.at(rec.t);
-    rec.p = {p.x(), p.y(), p.z()};
-    rec.normal = {1.0f, 0.0f, 0.0f}; // arbitrary
+    rec.p = r.at(rec.t);
+    rec.normal = vec3_gpu(1.0f, 0.0f, 0.0f); // arbitrary
     rec.front_face = true;
     rec.u = 0.0f;
     rec.v = 0.0f;

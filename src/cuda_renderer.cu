@@ -13,9 +13,6 @@
 
 #include <stdio.h>
 
-__host__ __device__ inline vec3_gpu to_gpu(const Vec3f& v) { return vec3_gpu(v.x, v.y, v.z); }
-__host__ __device__ inline Vec3f to_vec3f(const vec3_gpu& v) { return {v.x(), v.y(), v.z()}; }
-
 __global__ __launch_bounds__(256, 2) void generate_rays(PathStateSOA paths, camera_gpu cam, curandState* rand_state,
                                                         int width, int height, int batch_size) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -106,7 +103,7 @@ __device__ float perlin_noise(const point3_gpu& p, const PerlinDataGPU& pdata) {
     for (int dj = 0; dj < 2; dj++)
       for (int dk = 0; dk < 2; dk++) {
         int idx = pdata.perm_x[(i + di) & 255] ^ pdata.perm_y[(j + dj) & 255] ^ pdata.perm_z[(k + dk) & 255];
-        c[di][dj][dk] = to_gpu(pdata.randvec[idx]);
+        c[di][dj][dk] = pdata.randvec[idx];
       }
   return perlin_interp(c, u, v, w);
 }
@@ -126,7 +123,7 @@ __device__ float perlin_turb(const point3_gpu& p, const PerlinDataGPU& pdata, in
 __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, const point3_gpu& p,
                                       const cuda::span<PerlinDataGPU> perlin, cuda::span<unsigned char> image_data) {
   if (tex.type == TextureType::SOLID) {
-    return to_gpu(tex.solid.color);
+    return tex.solid.color;
   } else if (tex.type == TextureType::CHECKER) {
     int x = int(floorf(tex.checker.inv_scale * p.x()));
     int y = int(floorf(tex.checker.inv_scale * p.y()));
@@ -163,8 +160,8 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int* active_
     MaterialGPU mat = materials[hits.hit_material_id[idx]];
     vec3_gpu attenuation;
     ray_gpu scattered;
-    point3_gpu rec_p = to_gpu(hits.hit_p[idx]);
-    vec3_gpu rec_normal = to_gpu(hits.hit_normal[idx]);
+    point3_gpu rec_p = hits.hit_p[idx];
+    vec3_gpu rec_normal = hits.hit_normal[idx];
     float rec_u = hits.hit_u[idx], rec_v = hits.hit_v[idx];
     bool rec_front_face = hits.hit_front_face[idx];
 
@@ -178,17 +175,23 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int* active_
     curandState local_rand = rand_state[path_idx];
     bool is_scattered = false;
     if (mat.type == MaterialType::LAMBERTIAN) {
+
       vec3_gpu scatter_dir = rec_normal + random_unit_vector(&local_rand);
+
       if (scatter_dir.length_squared() < 1e-8f) scatter_dir = rec_normal;
       scattered = ray_gpu(rec_p, scatter_dir, paths.ray_time[path_idx]);
       attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
       is_scattered = true;
+
     } else if (mat.type == MaterialType::METAL) {
+
       vec3_gpu reflected = reflect(unit_vector(paths.ray_dir[path_idx]), rec_normal);
       scattered = ray_gpu(rec_p, reflected + mat.fuzz * random_unit_vector(&local_rand), paths.ray_time[path_idx]);
       attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
       is_scattered = (dot(scattered.direction(), rec_normal) > 0);
+
     } else if (mat.type == MaterialType::DIELECTRIC) {
+
       attenuation = vec3_gpu(1.0, 1.0, 1.0);
       float refraction_ratio = rec_front_face ? (1.0f / mat.ref_idx) : mat.ref_idx;
       vec3_gpu unit_direction = unit_vector(paths.ray_dir[path_idx]);
@@ -196,23 +199,28 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int* active_
       float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
       bool cannot_refract = refraction_ratio * sin_theta > 1.0f;
       vec3_gpu direction;
+
       if (cannot_refract || reflectance(cos_theta, refraction_ratio) > curand_uniform(&local_rand))
         direction = reflect(unit_direction, rec_normal);
       else direction = refract(unit_direction, rec_normal, refraction_ratio);
+
       scattered = ray_gpu(rec_p, direction, paths.ray_time[path_idx]);
       is_scattered = true;
     } else if (mat.type == MaterialType::ISOTROPIC) {
+
       scattered = ray_gpu(rec_p, random_unit_vector(&local_rand), paths.ray_time[path_idx]);
       attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
       is_scattered = true;
     }
 
     if (is_scattered) {
+
       paths.attenuation[path_idx] = paths.attenuation[path_idx] * attenuation;
       paths.ray_origin[path_idx] = scattered.origin();
       paths.ray_dir[path_idx] = scattered.direction();
       int next_idx = atomicAdd(next_count, 1);
       next_active[next_idx] = path_idx;
+
     } else {
       paths.alive[path_idx] = false;
     }
@@ -272,8 +280,8 @@ static void free_path_state_soa(PathStateSOA& p) {
 }
 
 static void alloc_hit_result_soa(HitResultSOA& h, int n) {
-  cudaMalloc(&h.hit_p, n * sizeof(Vec3f));
-  cudaMalloc(&h.hit_normal, n * sizeof(Vec3f));
+  cudaMalloc(&h.hit_p, n * sizeof(vec3_gpu));
+  cudaMalloc(&h.hit_normal, n * sizeof(vec3_gpu));
   cudaMalloc(&h.hit_t, n * sizeof(float));
   cudaMalloc(&h.hit_u, n * sizeof(float));
   cudaMalloc(&h.hit_v, n * sizeof(float));
@@ -337,13 +345,13 @@ extern "C" void launch_render(RenderConfig config, cuda::span<LinearBVHNode> h_b
   camera_gpu cam;
   cam.aspect_ratio = float(width) / height;
   cam.image_width = width;
-  cam.lookfrom = to_gpu(config.lookfrom);
-  cam.lookat = to_gpu(config.lookat);
-  cam.vup = to_gpu(config.vup);
+  cam.lookfrom = config.lookfrom;
+  cam.lookat = config.lookat;
+  cam.vup = config.vup;
   cam.vfov = config.vfov;
   cam.defocus_angle = config.defocus_angle;
   cam.focus_dist = config.focus_dist;
-  cam.background = to_gpu(config.background);
+  cam.background = config.background;
   cam.initialize();
 
   static vec3_gpu* d_accum = nullptr;
@@ -390,7 +398,7 @@ extern "C" void launch_render(RenderConfig config, cuda::span<LinearBVHNode> h_b
     accumulate<<<(width * height * cur + 255) / 256, 256>>>(d_paths, d_accum, width * height * cur);
   }
 
-  finalize<<<(width * height + 255) / 256, 256>>>((float4*)config.frame_buffer, d_accum, width * height,
+  finalize<<<(width * height + 255) / 256, 256>>>(config.frame_buffer, d_accum, width * height,
                                                   config.samples_per_pixel);
   cudaDeviceSynchronize();
 
@@ -414,14 +422,16 @@ extern "C" void* import_vulkan_memory(int fd, size_t size) {
     cudaDestroyExternalMemory(s_extMem);
     s_extMem = nullptr;
   }
-  cudaExternalMemoryHandleDesc d = {};
-  d.type = cudaExternalMemoryHandleTypeOpaqueFd;
+  cudaExternalMemoryHandleDesc d = {
+      .type = cudaExternalMemoryHandleTypeOpaqueFd,
+      .size = size,
+  };
   d.handle.fd = fd;
-  d.size = size;
   if (cudaImportExternalMemory(&s_extMem, &d) != cudaSuccess) return nullptr;
-  cudaExternalMemoryBufferDesc bd = {};
-  bd.offset = 0;
-  bd.size = size;
+  cudaExternalMemoryBufferDesc bd = {
+      .offset = 0,
+      .size = size,
+  };
   void* p;
   if (cudaExternalMemoryGetMappedBuffer(&p, s_extMem, &bd) != cudaSuccess) return nullptr;
   return p;

@@ -10,10 +10,7 @@ public:
 
   aabb() {} // The default AABB is empty, since intervals are empty by default.
 
-  aabb(const interval& x, const interval& y, const interval& z)
-      : x(x), y(y), z(z) {
-    pad_to_minimums();
-  }
+  aabb(const interval& x, const interval& y, const interval& z) : x(x), y(y), z(z) { pad_to_minimums(); }
 
   aabb(const point3& a, const point3& b) {
     // Treat the two points a and b as extrema for the bounding box, so we don't
@@ -38,10 +35,8 @@ public:
 
   int longest_axis() const {
     // Returns the index of the longest axis of the bounding box
-    if (x.size() > y.size())
-      return x.size() > z.size() ? 0 : 2;
-    else
-      return y.size() > z.size() ? 1 : 2;
+    if (x.size() > y.size()) return x.size() > z.size() ? 0 : 2;
+    else return y.size() > z.size() ? 1 : 2;
   }
 
   static const aabb empty, universe;
@@ -81,17 +76,13 @@ private:
   }
 };
 
-inline const aabb aabb::empty =
-    aabb(interval::empty, interval::empty, interval::empty);
-inline const aabb aabb::universe =
-    aabb(interval::universe, interval::universe, interval::universe);
+inline const aabb aabb::empty = aabb(interval::empty, interval::empty, interval::empty);
+inline const aabb aabb::universe = aabb(interval::universe, interval::universe, interval::universe);
 
 inline aabb operator+(const aabb& bbox, const vec3& offset) {
   return aabb(bbox.x + offset.x(), bbox.y + offset.y(), bbox.z + offset.z());
 }
 
-inline aabb operator+(const vec3& offset, const aabb& bbox) {
-  return bbox + offset;
-}
+inline aabb operator+(const vec3& offset, const aabb& bbox) { return bbox + offset; }
 
 #endif

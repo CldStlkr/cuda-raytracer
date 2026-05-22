@@ -147,15 +147,15 @@ void VulkanApp::draw_frame() {
       auto start = std::chrono::high_resolution_clock::now();
 
       RenderConfig config;
-      config.frame_buffer = (vec3_gpu*)cuda_interop_pointer_;
+      config.frame_buffer = (float4*)cuda_interop_pointer_;
       config.width = current_width_;
       config.height = current_height_;
       config.samples_per_pixel = samples_per_pixel_;
       config.max_depth = max_depth_;
-      config.background = Vec3f{background_color_[0], background_color_[1], background_color_[2]};
-      config.lookfrom = Vec3f{camera_pos_[0], camera_pos_[1], camera_pos_[2]};
-      config.lookat = Vec3f{camera_target_[0], camera_target_[1], camera_target_[2]};
-      config.vup = Vec3f{0, 1, 0};
+      config.background = vec3_gpu(background_color_[0], background_color_[1], background_color_[2]);
+      config.lookfrom = vec3_gpu(camera_pos_[0], camera_pos_[1], camera_pos_[2]);
+      config.lookat = vec3_gpu(camera_target_[0], camera_target_[1], camera_target_[2]);
+      config.vup = vec3_gpu(0, 1, 0);
       config.vfov = camera_fov_;
       config.defocus_angle = defocus_angle_;
       config.focus_dist = focus_distance_;
@@ -351,7 +351,7 @@ void VulkanApp::draw_frame() {
 
 void VulkanApp::init_instance() {
   VkApplicationInfo ai = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                          .pApplicationName = "Raytracer Studio",
+                          .pApplicationName = "Raytracer",
                           .applicationVersion = 0,
                           .pEngineName = "None",
                           .engineVersion = 0,
@@ -1168,15 +1168,15 @@ void VulkanApp::run_headless() {
   cudaMalloc(&cuda_interop_pointer_, buffer_size);
 
   RenderConfig config;
-  config.frame_buffer = (vec3_gpu*)cuda_interop_pointer_;
+  config.frame_buffer = (float4*)cuda_interop_pointer_;
   config.width = current_width_;
   config.height = current_height_;
   config.samples_per_pixel = samples_per_pixel_;
   config.max_depth = max_depth_;
-  config.background = Vec3f{background_color_[0], background_color_[1], background_color_[2]};
-  config.lookfrom = Vec3f{camera_pos_[0], camera_pos_[1], camera_pos_[2]};
-  config.lookat = Vec3f{camera_target_[0], camera_target_[1], camera_target_[2]};
-  config.vup = Vec3f{0, 1, 0};
+  config.background = vec3_gpu(background_color_[0], background_color_[1], background_color_[2]);
+  config.lookfrom = vec3_gpu(camera_pos_[0], camera_pos_[1], camera_pos_[2]);
+  config.lookat = vec3_gpu(camera_target_[0], camera_target_[1], camera_target_[2]);
+  config.vup = vec3_gpu(0, 1, 0);
   config.vfov = camera_fov_;
   config.defocus_angle = defocus_angle_;
   config.focus_dist = focus_distance_;

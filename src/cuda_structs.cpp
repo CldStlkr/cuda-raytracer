@@ -3,6 +3,8 @@
 #include "material.hpp"
 #include "texture.hpp"
 
+static inline vec3_gpu to_gpu(const vec3& v) { return vec3_gpu(float(v.x()), float(v.y()), float(v.z())); }
+
 // Define CumTransform locally
 struct CumTransform {
   vec3 offset{0, 0, 0};
@@ -75,7 +77,7 @@ int get_or_add_texture(std::shared_ptr<texture> tex_ptr, std::vector<TextureGPU>
 
   if (auto solid = dynamic_cast<solid_color*>(tex_ptr.get())) {
     gpu_tex.type = TextureType::SOLID;
-    gpu_tex.solid.color = to_vec3f(solid->albedo);
+    gpu_tex.solid.color = to_gpu(solid->albedo);
   } else if (auto checker = dynamic_cast<checker_texture*>(tex_ptr.get())) {
     gpu_tex.type = TextureType::CHECKER;
     gpu_tex.checker.inv_scale = static_cast<float>(checker->inv_scale);
@@ -108,7 +110,7 @@ int get_or_add_texture(std::shared_ptr<texture> tex_ptr, std::vector<TextureGPU>
 
     PerlinDataGPU p_data;
     for (int i = 0; i < 256; ++i) {
-      p_data.randvec[i] = to_vec3f(noise_tex->noise.randvec[i]);
+      p_data.randvec[i] = to_gpu(noise_tex->noise.randvec[i]);
       p_data.perm_x[i] = noise_tex->noise.perm_x[i];
       p_data.perm_y[i] = noise_tex->noise.perm_y[i];
       p_data.perm_z[i] = noise_tex->noise.perm_z[i];
@@ -138,7 +140,7 @@ int get_or_add_material(std::shared_ptr<material> mat_ptr, std::vector<MaterialG
     gpu_mat.type = MaterialType::METAL;
     TextureGPU gpu_tex;
     gpu_tex.type = TextureType::SOLID;
-    gpu_tex.solid.color = to_vec3f(met->get_albedo());
+    gpu_tex.solid.color = to_gpu(met->get_albedo());
     gpu_mat.albedo_tex_id = linear_textures.size();
     linear_textures.push_back(gpu_tex);
     gpu_mat.fuzz = static_cast<float>(met->get_fuzz());
@@ -146,7 +148,7 @@ int get_or_add_material(std::shared_ptr<material> mat_ptr, std::vector<MaterialG
     gpu_mat.type = MaterialType::DIELECTRIC;
     TextureGPU gpu_tex;
     gpu_tex.type = TextureType::SOLID;
-    gpu_tex.solid.color = Vec3f{1.0f, 1.0f, 1.0f};
+    gpu_tex.solid.color = vec3_gpu(1.0f, 1.0f, 1.0f);
     gpu_mat.albedo_tex_id = linear_textures.size();
     linear_textures.push_back(gpu_tex);
     gpu_mat.ref_idx = static_cast<float>(die->get_refraction_index());
@@ -162,23 +164,6 @@ int get_or_add_material(std::shared_ptr<material> mat_ptr, std::vector<MaterialG
   linear_materials.push_back(gpu_mat);
   mat_map[mat_ptr.get()] = new_id;
   return new_id;
-}
-
-// Forward declaration
-int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<LinearBVHNode>& linear_nodes,
-                              std::vector<PrimitiveGPU>& linear_primitives, std::vector<MaterialGPU>& linear_materials,
-                              std::vector<TextureGPU>& linear_textures, std::vector<PerlinDataGPU>& linear_perlin,
-                              std::vector<unsigned char>& image_buffer, std::unordered_map<material*, int>& mat_map,
-                              std::unordered_map<texture*, int>& tex_map, CumTransform current_trans);
-
-int flatten_hittable(std::shared_ptr<hittable> node, std::vector<LinearBVHNode>& linear_nodes,
-                     std::vector<PrimitiveGPU>& linear_primitives, std::vector<MaterialGPU>& linear_materials,
-                     std::vector<TextureGPU>& linear_textures, std::vector<PerlinDataGPU>& linear_perlin,
-                     std::vector<unsigned char>& image_buffer, std::unordered_map<material*, int>& mat_map,
-                     std::unordered_map<texture*, int>& tex_map) {
-
-  return flatten_hittable_internal(node, linear_nodes, linear_primitives, linear_materials, linear_textures,
-                                   linear_perlin, image_buffer, mat_map, tex_map, CumTransform());
 }
 
 int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<LinearBVHNode>& linear_nodes,
@@ -240,8 +225,8 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
       box.z.min -= delta / 2.0;
       box.z.max += delta / 2.0;
     }
-    linear_nodes[curr_idx].aabb_min = Vec3f{float(box.x.min), float(box.y.min), float(box.z.min)};
-    linear_nodes[curr_idx].aabb_max = Vec3f{float(box.x.max), float(box.y.max), float(box.z.max)};
+    linear_nodes[curr_idx].aabb_min = vec3_gpu(float(box.x.min), float(box.y.min), float(box.z.min));
+    linear_nodes[curr_idx].aabb_max = vec3_gpu(float(box.x.max), float(box.y.max), float(box.z.max));
     linear_nodes[curr_idx].n_primitives = 0;
     linear_nodes[curr_idx].second_child_offset = right_offset;
 
@@ -283,16 +268,16 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
 
       if (auto sph = dynamic_cast<sphere*>(unwrap.get())) {
         prim.type = PrimitiveType::VOLUME_SPHERE;
-        prim.volume_sphere.center = to_vec3f(vol_trans.apply(sph->get_center().origin()));
+        prim.volume_sphere.center = to_gpu(vol_trans.apply(sph->get_center().origin()));
         prim.volume_sphere.radius = static_cast<float>(sph->get_radius());
         prim.volume_sphere.neg_inv_density = static_cast<float>(c_med->neg_inv_density);
       } else if (auto hl = dynamic_cast<hittable_list*>(unwrap.get())) {
         // Box: Find local AABB.
         prim.type = PrimitiveType::VOLUME_BOX;
         aabb local_box = hl->bounding_box();
-        prim.volume_box.local_min = to_vec3f(vec3(local_box.x.min, local_box.y.min, local_box.z.min));
-        prim.volume_box.local_max = to_vec3f(vec3(local_box.x.max, local_box.y.max, local_box.z.max));
-        prim.volume_box.offset = to_vec3f(vol_trans.offset);
+        prim.volume_box.local_min = to_gpu(vec3(local_box.x.min, local_box.y.min, local_box.z.min));
+        prim.volume_box.local_max = to_gpu(vec3(local_box.x.max, local_box.y.max, local_box.z.max));
+        prim.volume_box.offset = to_gpu(vol_trans.offset);
         prim.volume_box.sin_theta = static_cast<float>(vol_trans.sin_t);
         prim.volume_box.cos_theta = static_cast<float>(vol_trans.cos_t);
         prim.volume_box.neg_inv_density = static_cast<float>(c_med->neg_inv_density);
@@ -306,12 +291,12 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
       if (dist_vec.length_squared() > 1e-8) {
         prim.type = PrimitiveType::MOVING_SPHERE;
         // The start and vec map over time in World Space natively!
-        prim.moving_sphere.center_start = to_vec3f(current_trans.apply(sphere_ptr->get_center().origin()));
-        prim.moving_sphere.center_vec = to_vec3f(current_trans.apply_vec(dist_vec));
+        prim.moving_sphere.center_start = to_gpu(current_trans.apply(sphere_ptr->get_center().origin()));
+        prim.moving_sphere.center_vec = to_gpu(current_trans.apply_vec(dist_vec));
         prim.moving_sphere.radius = static_cast<float>(sphere_ptr->get_radius());
       } else {
         prim.type = PrimitiveType::SPHERE;
-        prim.sphere.center = to_vec3f(current_trans.apply(sphere_ptr->get_center().origin()));
+        prim.sphere.center = to_gpu(current_trans.apply(sphere_ptr->get_center().origin()));
         prim.sphere.radius = static_cast<float>(sphere_ptr->get_radius());
       }
 
@@ -320,9 +305,9 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
 
     } else if (auto quad_ptr = dynamic_cast<quad*>(node.get())) {
       prim.type = PrimitiveType::QUAD;
-      prim.quad.Q = to_vec3f(current_trans.apply(quad_ptr->Q));
-      prim.quad.u = to_vec3f(current_trans.apply_vec(quad_ptr->u));
-      prim.quad.v = to_vec3f(current_trans.apply_vec(quad_ptr->v));
+      prim.quad.Q = to_gpu(current_trans.apply(quad_ptr->Q));
+      prim.quad.u = to_gpu(current_trans.apply_vec(quad_ptr->u));
+      prim.quad.v = to_gpu(current_trans.apply_vec(quad_ptr->v));
 
       [[maybe_unused]] vec3 w = quad_ptr->w;
       [[maybe_unused]] vec3 n = quad_ptr->normal;
@@ -336,8 +321,8 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
       float D_w = dot(normal_w, Q_w);
       vec3 w_new = n_w / dot(n_w, n_w);
 
-      prim.quad.w = to_vec3f(w_new);
-      prim.quad.normal = to_vec3f(normal_w);
+      prim.quad.w = to_gpu(w_new);
+      prim.quad.normal = to_gpu(normal_w);
       prim.quad.D = D_w;
 
       prim.material_id = get_or_add_material(quad_ptr->mat, linear_materials, linear_textures, linear_perlin,
@@ -348,18 +333,18 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
       // Interpolate Q and D in world space
       point3 Q1_w = current_trans.apply(m_quad_ptr->Q1);
       point3 Q2_w = current_trans.apply(m_quad_ptr->Q2);
-      prim.moving_quad.Q_start = to_vec3f(Q1_w);
-      prim.moving_quad.Q_vec = to_vec3f(Q2_w - Q1_w);
+      prim.moving_quad.Q_start = to_gpu(Q1_w);
+      prim.moving_quad.Q_vec = to_gpu(Q2_w - Q1_w);
 
       vec3 u_w = current_trans.apply_vec(m_quad_ptr->u);
       vec3 v_w = current_trans.apply_vec(m_quad_ptr->v);
       vec3 n_w = cross(u_w, v_w);
       vec3 normal_w = unit_vector(n_w);
 
-      prim.moving_quad.u = to_vec3f(u_w);
-      prim.moving_quad.v = to_vec3f(v_w);
-      prim.moving_quad.w = to_vec3f(n_w / dot(n_w, n_w));
-      prim.moving_quad.normal = to_vec3f(normal_w);
+      prim.moving_quad.u = to_gpu(u_w);
+      prim.moving_quad.v = to_gpu(v_w);
+      prim.moving_quad.w = to_gpu(n_w / dot(n_w, n_w));
+      prim.moving_quad.normal = to_gpu(normal_w);
 
       float D1_w = dot(normal_w, Q1_w);
       float D2_w = dot(normal_w, Q2_w);
@@ -388,8 +373,8 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
       box.z.max += delta / 2.0;
     }
 
-    linear_nodes[curr_idx].aabb_min = to_vec3f(vec3{box.x.min, box.y.min, box.z.min});
-    linear_nodes[curr_idx].aabb_max = to_vec3f(vec3{box.x.max, box.y.max, box.z.max});
+    linear_nodes[curr_idx].aabb_min = to_gpu(vec3{box.x.min, box.y.min, box.z.min});
+    linear_nodes[curr_idx].aabb_max = to_gpu(vec3{box.x.max, box.y.max, box.z.max});
 
     linear_primitives.push_back(prim);
 
@@ -398,4 +383,14 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
 
     return curr_idx;
   }
+}
+
+int flatten_hittable(std::shared_ptr<hittable> node, std::vector<LinearBVHNode>& linear_nodes,
+                     std::vector<PrimitiveGPU>& linear_primitives, std::vector<MaterialGPU>& linear_materials,
+                     std::vector<TextureGPU>& linear_textures, std::vector<PerlinDataGPU>& linear_perlin,
+                     std::vector<unsigned char>& image_buffer, std::unordered_map<material*, int>& mat_map,
+                     std::unordered_map<texture*, int>& tex_map) {
+
+  return flatten_hittable_internal(node, linear_nodes, linear_primitives, linear_materials, linear_textures,
+                                   linear_perlin, image_buffer, mat_map, tex_map, CumTransform());
 }

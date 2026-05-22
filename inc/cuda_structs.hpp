@@ -17,22 +17,9 @@ namespace cuda {
 using cuda::std::span;
 }
 
-struct Vec3f {
-  float x, y, z;
-};
-
-inline Vec3f to_vec3f(const vec3& v) {
-  return Vec3f{static_cast<float>(v.x()), static_cast<float>(v.y()), static_cast<float>(v.z())};
-}
-
-struct RayGPU {
-  Vec3f origin;
-  Vec3f direction;
-};
-
 struct HitRecordGPU {
-  Vec3f p;
-  Vec3f normal;
+  vec3_gpu p;
+  vec3_gpu normal;
   float t;
   float v;
   float u;
@@ -41,7 +28,7 @@ struct HitRecordGPU {
 };
 
 struct SphereGPU {
-  Vec3f center;
+  vec3_gpu center;
   float radius;
   int material_id; // index into material array
 };
@@ -63,9 +50,10 @@ enum class TextureType : uint8_t {
 
 struct TextureGPU {
   TextureType type;
+  TextureGPU() {}
   union {
     struct {
-      Vec3f color;
+      vec3_gpu color;
     } solid;
     struct {
       float inv_scale;
@@ -86,7 +74,7 @@ struct TextureGPU {
 };
 
 struct PerlinDataGPU {
-  Vec3f randvec[256];
+  vec3_gpu randvec[256];
   int perm_x[256];
   int perm_y[256];
   int perm_z[256];
@@ -110,56 +98,57 @@ enum class PrimitiveType : int {
 
 struct PrimitiveGPU {
   PrimitiveType type;
+  PrimitiveGPU() {}
 
   union {
     struct {
-      Vec3f center;
+      vec3_gpu center;
       float radius;
     } sphere;
 
     struct {
-      Vec3f center_start;
-      Vec3f center_vec;
+      vec3_gpu center_start;
+      vec3_gpu center_vec;
       float radius;
     } moving_sphere;
 
     struct {
-      Vec3f Q, u, v, w;
-      Vec3f normal;
+      vec3_gpu Q, u, v, w;
+      vec3_gpu normal;
       float D;
     } quad;
     struct {
-      Vec3f center;
+      vec3_gpu center;
       float radius;
       float neg_inv_density;
     } volume_sphere;
 
     struct {
-      Vec3f local_min;
-      Vec3f local_max;
-      Vec3f offset;
+      vec3_gpu local_min;
+      vec3_gpu local_max;
+      vec3_gpu offset;
       float sin_theta;
       float cos_theta;
       float neg_inv_density;
     } volume_box;
     struct {
-      Vec3f Q_start, Q_vec;
-      Vec3f u, v, w;
-      Vec3f normal;
+      vec3_gpu Q_start, Q_vec;
+      vec3_gpu u, v, w;
+      vec3_gpu normal;
       float D_start, D_vec;
     } moving_quad;
   };
 
   // AABB for BHV intersection fast-path
-  Vec3f aabb_min;
-  Vec3f aabb_max;
+  vec3_gpu aabb_min;
+  vec3_gpu aabb_max;
 
   int material_id;
 };
 
 struct LinearBVHNode {
-  Vec3f aabb_min;
-  Vec3f aabb_max;
+  vec3_gpu aabb_min;
+  vec3_gpu aabb_max;
 
   union {
     int primitive_offset;    // Leaf node: index into the PrimitiveGPU array
@@ -173,17 +162,17 @@ struct LinearBVHNode {
 };
 
 struct RenderConfig {
-  vec3_gpu* frame_buffer;
+  float4* frame_buffer;
   int width;
   int height;
   int samples_per_pixel;
   int max_depth;
-  Vec3f background;
+  vec3_gpu background;
 
   // Camera Settings
-  Vec3f lookfrom;
-  Vec3f lookat;
-  Vec3f vup;
+  vec3_gpu lookfrom;
+  vec3_gpu lookat;
+  vec3_gpu vup;
   float vfov;
   float defocus_angle;
   float focus_dist;
@@ -209,8 +198,8 @@ struct PathStateSOA {
 
 struct HitResultSOA {
   // HitRecordGPU components (decomposed for SoA)
-  Vec3f* hit_p;
-  Vec3f* hit_normal;
+  vec3_gpu* hit_p;
+  vec3_gpu* hit_normal;
   float* hit_t;
   float* hit_u;
   float* hit_v;
@@ -218,19 +207,6 @@ struct HitResultSOA {
   int* hit_material_id;
 
   bool* hit_anything;
-};
-
-#define NUM_MATERIAL_TYPES 5
-
-// Per-material queues for warp-aggregated atomic dispatch.
-// Replaces thrust::sort_by_key + thrust::partition with O(1) per-thread
-// queue pushes using __ballot_sync and __shfl_sync.
-struct MaterialQueues {
-  int* queues[NUM_MATERIAL_TYPES]; // per-material index arrays (preallocated to
-                                   // total_rays)
-  int* counts;                     // device array of NUM_MATERIAL_TYPES ints (atomic counters)
-  int* next_active;                // queue for next bounce's active indices
-  int* next_count;                 // device int (atomic counter for next_active)
 };
 
 int get_or_add_texture(std::shared_ptr<texture> tex_ptr, std::vector<TextureGPU>& linear_textures,
