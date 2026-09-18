@@ -5,16 +5,14 @@ Diagnostics:
 
 CompileFlags:
   Add:
-    - --cuda-path=/usr/local/cuda
+    - --cuda-path=./.nix-cuda-sdk
     - --cuda-gpu-arch=sm_75
     - --cuda-host-only
     - -x
     - cuda
     - -std=c++20
-    - -I/usr/local/cuda/include
-    - -I/usr/local/cuda/include/cccl
-    - -I/usr/local/cuda/targets/x86_64-linux/include
-    - -I/usr/local/cuda/targets/x86_64-linux/include/cccl
+    - -I./.nix-cuda-sdk/include
+    - -I./.nix-cuda-sdk/include/cccl
     - -I/home/neel/Dev/personal/cuda-raytracer/inc
   Remove:
     - -forward-unknown-to-host-compiler

@@ -8,6 +8,8 @@
 /compile_commands.json
 /imgui.ini
 /.cache/
+/.nix-cuda-sdk
+/.direnv/
 
 *.swp
 /build_test/
