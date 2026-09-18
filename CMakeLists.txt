@@ -7,6 +7,9 @@ enable_language(C)
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# clangd can't expand nvcc's --options-file response files, so keep CUDA
+# include flags inline in compile_commands.json.
+set(CMAKE_CUDA_USE_RESPONSE_FILE_FOR_INCLUDES OFF)
 
 # ---------- Vulkan ----------
 list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/vulkansdk/1.4.341.1/x86_64")
