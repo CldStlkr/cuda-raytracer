@@ -17,13 +17,13 @@ public:
       : boundary(boundary), neg_inv_density(-1 / density),
         phase_function(std::make_shared<isotropic>(albedo)) {}
 
-  bool hit(const ray &r, interval ray_t, hit_record &rec) const override {
+  bool hit(const ray &r, interval ray_t, hit_record &rec, RNG &rng) const override {
     hit_record rec1, rec2;
 
-    if (!boundary->hit(r, interval::universe, rec1))
+    if (!boundary->hit(r, interval::universe, rec1, rng))
       return false;
 
-    if (!boundary->hit(r, interval(rec1.t + 0.0001, infinity), rec2))
+    if (!boundary->hit(r, interval(rec1.t + 0.0001, infinity), rec2, rng))
       return false;
 
     if (rec1.t < ray_t.min)
@@ -39,7 +39,13 @@ public:
 
     auto ray_length = r.direction().length();
     auto distance_inside_boundary = (rec2.t - rec1.t) * ray_length;
-    auto hit_distance = neg_inv_density * std::log(random_double());
+    // 1 draw from the stream-1 RNG, matching hit_primitive's VOLUME_* cases.
+    // NOTE: the number of draws per bounce is traversal-order dependent -- one
+    // per volume reaching this point -- and the host tree walk and the device
+    // flat-BVH walk do not visit volumes in the same order. Volume scenes
+    // therefore cannot be image-compared against the device; see validation
+    // notes. Non-volume scenes consume zero draws here and are unaffected.
+    auto hit_distance = neg_inv_density * std::log(rng.next_d());
 
     if (hit_distance > distance_inside_boundary)
       return false;

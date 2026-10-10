@@ -14,6 +14,13 @@ class camera {
 public:
   double aspect_ratio = 1.0;
   int image_width = 100;
+
+  // When > 0, overrides the height derived from aspect_ratio. VulkanApp computes
+  // current_height_ with a float division and initialize() used a double one;
+  // for 16:9 the true quotient 449.9999966 rounds to 450.0f in float but
+  // truncates to 449 in double. That sized cpu_render_buffer_ one row short of
+  // what the display path expects, so the blit pushed an all-zero frame.
+  int image_height_override = 0;
   int samples_per_pixel = 10;
   int max_depth = 10;
   color background;
@@ -23,6 +30,11 @@ public:
   vec3 vup = vec3(0, 1, 0);
   double defocus_angle = 0;
   double focus_dist = 10;
+
+  // Shutter interval. Must match RenderConfig::time0/time1 in
+  // inc/cuda_structs.hpp; sphere(c1,c2,...) interpolates center over t in [0,1].
+  double time0 = 0.0;
+  double time1 = 1.0;
 
   // Rendering options
   bool enable_antialiasing = true;
@@ -71,10 +83,13 @@ public:
           color pixel_color(0, 0, 0);
           int sample_count = enable_antialiasing ? samples_per_pixel : 1;
 
+          // Must match generate_rays: pixel_index = j * width + i.
+          uint32_t pixel_index = uint32_t(j) * uint32_t(image_width) + uint32_t(i);
+
           for (int sample = 0; sample < sample_count && !should_stop.load();
                sample++) {
-            ray r = get_ray(i, j);
-            pixel_color += ray_color(r, max_depth, world);
+            ray r = get_ray(i, j, pixel_index, uint32_t(sample));
+            pixel_color += ray_color(r, max_depth, world, pixel_index, uint32_t(sample));
           }
 
           if (should_stop.load()) break;
@@ -173,8 +188,15 @@ private:
   vec3 defocus_disk_u;
   vec3 defocus_disk_v;
 
+  // initialize() and get_ray() are public so the validation harness can drive
+  // ray generation directly and compare it against generate_rays without
+  // rendering a whole frame. State above stays private.
+public:
+  int get_image_height() const { return image_height; }
+
   void initialize() {
-    image_height = int(image_width / aspect_ratio);
+    image_height = (image_height_override > 0) ? image_height_override
+                                               : int(image_width / aspect_ratio);
     image_height = (image_height < 1) ? 1 : image_height;
 
     center = lookfrom;
@@ -211,51 +233,69 @@ private:
     defocus_disk_v = v * defocus_radius;
   }
 
-  ray get_ray(int i, int j) const {
-    // Get a randomly sampled camera ray for pixel (i,j)
-    vec3 offset = enable_antialiasing ? sample_square() : vec3(0, 0, 0);
-    auto pixel_sample = pixel00_loc + ((i + offset.x()) * pixel_delta_u) +
-                        ((j + offset.y()) * pixel_delta_v);
+  // stream 0 == generate_rays. Draw order must match it exactly:
+  //   jitter u, jitter v, [disk r, disk theta if defocus_angle > 0], ray_time.
+  ray get_ray(int i, int j, uint32_t pixel, uint32_t sample) const {
+    RNG rng(pixel, sample, 0u, 0u);
 
-    auto ray_origin = (defocus_angle <= 0) ? center : defocus_disk_sample();
+    // Drawn unconditionally: enable_antialiasing has no device equivalent, and
+    // skipping the draws would shift the rest of the stream.
+    double du = rng.next_d() - 0.5;
+    double dv = rng.next_d() - 0.5;
+    if (!enable_antialiasing) {
+      du = 0.0;
+      dv = 0.0;
+    }
+
+    auto pixel_sample =
+        pixel00_loc + ((i + du) * pixel_delta_u) + ((j + dv) * pixel_delta_v);
+
+    // Condition is uniform across all paths (a config scalar), so host and
+    // device always take the same branch here.
+    point3 ray_origin = center;
+    if (defocus_angle > 0) {
+      vec3 p = random_in_unit_disk_d(rng); // 2 draws
+      ray_origin = center + (p[0] * defocus_disk_u) + (p[1] * defocus_disk_v);
+    }
+
     auto ray_direction = pixel_sample - ray_origin;
-    auto ray_time = random_double();
+    auto ray_time = time0 + rng.next_d() * (time1 - time0);
 
     return ray(ray_origin, ray_direction, ray_time);
   }
 
-  vec3 sample_square() const {
-    // Returns a random point in the square surrounding a pixel at the origin
-    return vec3(random_double() - 0.5, random_double() - 0.5, 0);
-  }
-
-  point3 defocus_disk_sample() const {
-    // Returns a random point in the camera defocus disk
-    auto p = random_in_unit_disk();
-    return center + (p[0] * defocus_disk_u) + (p[1] * defocus_disk_v);
-  }
-
-  color ray_color(const ray& r, int depth, const hittable& world) const {
+  // pixel and sample identify the path for RNG seeding; depth counts down, so
+  // the bounce index the device uses is (max_depth - depth).
+  color ray_color(const ray& r, int depth, const hittable& world, uint32_t pixel,
+                  uint32_t sample) const {
     if (depth <= 0) {
       return color(0, 0, 0);
     }
 
     hit_record rec;
 
-    if (!world.hit(r, interval(0.001, infinity), rec)) {
+    // stream 1 == intersect_bvh. Only participating media draw from it.
+    RNG hit_rng(pixel, sample, uint32_t(max_depth - depth), 1u);
+
+    if (!world.hit(r, interval(0.001, infinity), rec, hit_rng)) {
       return background;
     }
     ray scattered;
     color attenuation;
 
+    // stream 2 == shade_kernel. Seeded from the coordinate tuple rather than
+    // carried state, so the recursive host traversal and the wavefront device
+    // traversal see the same draws for the same path.
+    RNG shade_rng(pixel, sample, uint32_t(max_depth - depth), 2u);
+
     // Unconditionally grab any light being emitted by the material we hit.
     // If it's not a light, this safely returns color(0,0,0).
     color color_from_emission = rec.mat->emitted(rec.u, rec.v, rec.p);
-    if (enable_shadows && rec.mat->scatter(r, rec, attenuation, scattered)) {
+    if (enable_shadows && rec.mat->scatter(r, rec, attenuation, scattered, shade_rng)) {
       color color_from_scatter;
       if (enable_reflections || enable_refractions) {
         color_from_scatter =
-            attenuation * ray_color(scattered, depth - 1, world);
+            attenuation * ray_color(scattered, depth - 1, world, pixel, sample);
       } else {
         vec3 light_dir = unit_vector(vec3(1, 1, 1));
         double light_intensity = std::max(0.0, dot(rec.normal, light_dir));

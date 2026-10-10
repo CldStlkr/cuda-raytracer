@@ -9,9 +9,7 @@ int main(int argc, char* argv[]) {
   // Simple argument parsing
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--headless") {
-      headless = true;
-    }
+    if (arg == "--headless") { headless = true; }
   }
 
   try {

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 
+#include "cuda/vec.cuh" // RNG, shared with the device path
 #include "rt.hpp"
 
 class vec3 {
@@ -143,6 +144,23 @@ inline vec3 random_on_hemisphere(const vec3& normal) {
   }
 }
 
+// float64 mirrors of the device samplers in inc/cuda/vec.cuh. Same RNG, same
+// draw count and order; only the arithmetic width differs. next_d() and
+// next_f() return the same value -- bits/2^24 is exact in both formats -- so
+// the random inputs are identical and any delta is pure precision.
+inline vec3 random_unit_vector_d(RNG& rng) {
+  double z = 1.0 - 2.0 * rng.next_d();
+  double phi = 6.28318530717958648 * rng.next_d();
+  double r = std::sqrt(std::fmax(0.0, (1.0 - z) * (1.0 + z)));
+  return vec3(r * std::cos(phi), r * std::sin(phi), z);
+}
+
+inline vec3 random_in_unit_disk_d(RNG& rng) {
+  double r = std::sqrt(rng.next_d());
+  double theta = 6.28318530717958648 * rng.next_d();
+  return vec3(r * std::cos(theta), r * std::sin(theta), 0.0);
+}
+
 inline vec3 reflect(const vec3& v, const vec3& n) {
   return v - (2 * dot(v, n) * n);
 }
@@ -150,9 +168,11 @@ inline vec3 reflect(const vec3& v, const vec3& n) {
 inline vec3 refract(const vec3& uv, const vec3& n, double etai_over_etat) {
   auto cos_theta = std::fmin(dot(-uv, n), 1.0);
   vec3 r_out_perp = etai_over_etat * (uv + cos_theta * n);
-  vec3 r_out_parellel =
-      -std::sqrt(std::fabs(1.0 - r_out_perp.length_squared())) * n;
-
-  return r_out_perp + r_out_parellel;
+  // Mirrors the device formula in inc/cuda/vec.cuh; see the note there for the
+  // conditioning near the critical angle.
+  double sin_theta = std::sqrt(std::fmax(0.0, (1.0 - cos_theta) * (1.0 + cos_theta)));
+  double w = etai_over_etat * sin_theta;
+  double cos_t = std::sqrt(std::fmax(0.0, (1.0 - w) * (1.0 + w)));
+  return r_out_perp - cos_t * n;
 }
 #endif // !VEC3_HPP

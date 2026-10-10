@@ -13,8 +13,12 @@ public:
   virtual color emitted(double /*u*/, double /*v*/, const point3& /*p*/) const {
     return color(0, 0, 0);
   }
+  // rng is seeded per (pixel, sample, bounce, stream=2) by the caller, matching
+  // shade_kernel. Overrides must consume a fixed number of draws so the host
+  // and device streams stay aligned.
   virtual bool scatter(const ray& /*r_in*/, const hit_record& /*rec*/,
-                       color& /*attenuation*/, ray& /*scattered*/) const {
+                       color& /*attenuation*/, ray& /*scattered*/,
+                       RNG& /*rng*/) const {
     return false;
   }
 };
@@ -26,10 +30,14 @@ public:
   lambertian(std::shared_ptr<texture> tex) : tex{tex} {}
 
   bool scatter(const ray& r_in, const hit_record& rec, color& attenuation,
-               ray& scattered) const override {
-    auto scatter_direction = rec.normal + random_unit_vector();
+               ray& scattered, RNG& rng) const override {
+    auto scatter_direction = rec.normal + random_unit_vector_d(rng); // 2 draws
 
-    if (scatter_direction.near_zero()) {
+    // length_squared(), not near_zero(): near_zero() tests each component
+    // against 1e-8 (|v| < 1.7e-8) while shade_kernel tests |v|^2 < 1e-8
+    // (|v| < 1e-4). Unreachable in practice with analytic sampling, but the
+    // two paths must agree on the predicate.
+    if (scatter_direction.length_squared() < 1e-8) {
       scatter_direction = rec.normal;
     }
 
@@ -54,9 +62,14 @@ public:
       : albedo{albedo}, fuzz{fuzz < 1 ? fuzz : 1} {}
 
   bool scatter(const ray& r_in, const hit_record& rec, color& attenuation,
-               ray& scattered) const override {
+               ray& scattered, RNG& rng) const override {
+    // Two deliberate changes to match shade_kernel: fuzz perturbs by a point
+    // ON the unit sphere (was random_in_unit_sphere, i.e. inside it), and the
+    // reflected vector is not re-normalized -- reflect() of a unit vector
+    // about a unit normal is already unit, so unit_vector() only added a
+    // division the device path doesn't perform.
     vec3 reflected = reflect(unit_vector(r_in.direction()), rec.normal);
-    reflected = unit_vector(reflected) + (fuzz * random_in_unit_sphere());
+    reflected = reflected + (fuzz * random_unit_vector_d(rng)); // 2 draws
     scattered = ray(rec.p, reflected, r_in.time());
     attenuation = albedo;
     return (dot(scattered.direction(), rec.normal) > 0);
@@ -74,19 +87,28 @@ class dielectric : public material {
 public:
   dielectric(double refraction_index) : refraction_index{refraction_index} {}
   bool scatter(const ray& r_in, const hit_record& rec, color& attenuation,
-               ray& scattered) const override {
+               ray& scattered, RNG& rng) const override {
     attenuation = color(1.0, 1.0, 1.0);
     double ri = rec.front_face ? (1.0 / refraction_index) : refraction_index;
 
     vec3 unit_direction = unit_vector(r_in.direction());
 
     double cos_theta = std::fmin(dot(-unit_direction, rec.normal), 1.0);
-    double sin_theta = std::sqrt(1.0 - cos_theta * cos_theta);
+    // Matches the device formula in cuda_renderer.cu so the two paths agree
+    // bit-for-bit; see the note there.
+    double sin_theta = std::sqrt(std::fmax(0.0, (1.0 - cos_theta) * (1.0 + cos_theta)));
 
     bool cannot_refract = ri * sin_theta > 1.0;
     vec3 direction;
 
-    if (cannot_refract || reflectance(cos_theta, ri) > random_double()) {
+    // Drawn unconditionally so the per-material draw count is a function of
+    // material type alone, not of a floating-point comparison. Defensive
+    // rather than load-bearing: this stream is re-seeded every bounce, so a
+    // short-circuit here could not desync anything downstream today. It keeps
+    // the count an invariant the parity test can assert.
+    double xi = rng.next_d(); // 1 draw, always
+
+    if (cannot_refract || reflectance(cos_theta, ri) > xi) {
       direction = reflect(unit_direction, rec.normal);
     } else {
       direction = refract(unit_direction, rec.normal, ri);
@@ -108,7 +130,10 @@ private:
     // Use Schlick's approximation for reflectance
     auto r0 = (1 - refraction_index) / (1 + refraction_index);
     r0 = r0 * r0;
-    return r0 + (1 - r0) * std::pow((1 - cosine), 5);
+    // x^5 by multiplication, matching reflectance() in inc/cuda/vec.cuh so the
+    // two paths evaluate the same expression.
+    double x = 1 - cosine, x2 = x * x;
+    return r0 + (1 - r0) * (x2 * x2 * x);
   }
 };
 
@@ -131,8 +156,8 @@ public:
   isotropic(std::shared_ptr<texture> tex) : tex(tex) {}
 
   bool scatter(const ray& r_in, const hit_record& rec, color& attenuation,
-               ray& scattered) const override {
-    scattered = ray(rec.p, random_unit_vector(), r_in.time());
+               ray& scattered, RNG& rng) const override {
+    scattered = ray(rec.p, random_unit_vector_d(rng), r_in.time()); // 2 draws
     attenuation = tex->value(rec.u, rec.v, rec.p);
     return true;
   }

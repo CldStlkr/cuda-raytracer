@@ -33,7 +33,10 @@ class hittable {
 public:
   virtual ~hittable() = default;
 
-  virtual bool hit(const ray& r, interval ray_t, hit_record& rec) const = 0;
+  // rng is seeded per (pixel, sample, bounce, stream=1) by the caller, matching
+  // intersect_bvh. Only participating media consume from it; every other
+  // primitive ignores it.
+  virtual bool hit(const ray& r, interval ray_t, hit_record& rec, RNG& rng) const = 0;
 
   virtual aabb bounding_box() const = 0;
 };
@@ -44,13 +47,13 @@ public:
       : object(object), offset(offset) {
     bbox = object->bounding_box() + offset;
   }
-  bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
+  bool hit(const ray& r, interval ray_t, hit_record& rec, RNG& rng) const override {
     // Move the ray backwards by the offset
     ray offset_r(r.origin() - offset, r.direction(), r.time());
 
     // Determine whether an intersection exists along the offset ray (and if so,
     // where)
-    if (!object->hit(offset_r, ray_t, rec)) return false;
+    if (!object->hit(offset_r, ray_t, rec, rng)) return false;
 
     // Move the intersection point forwards by the offset
     rec.p += offset;
@@ -99,7 +102,7 @@ public:
 
     bbox = aabb(min, max);
   }
-  bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
+  bool hit(const ray& r, interval ray_t, hit_record& rec, RNG& rng) const override {
 
     // Transform the ray from world space to object space.
     auto origin =
@@ -117,7 +120,7 @@ public:
     // Determine whether an intersection exists in object space (and if so,
     // where).
 
-    if (!object->hit(rotated_r, ray_t, rec)) return false;
+    if (!object->hit(rotated_r, ray_t, rec, rng)) return false;
 
     // Transform the intersection from object space back to world space.
 

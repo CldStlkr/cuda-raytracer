@@ -142,6 +142,10 @@ void VulkanApp::draw_frame() {
     is_rendering_ = true;
     render_progress_ = 0.0f;
     trigger_render_ = false;
+    // Cleared per render: STOP latches this true and only the CPU path reads
+    // it, so without the reset every CPU render after the first STOP aborts
+    // immediately while GPU renders appear unaffected.
+    should_stop_render_ = false;
 
     if (use_gpu_render_) {
       auto start = std::chrono::high_resolution_clock::now();
@@ -724,16 +728,34 @@ void VulkanApp::transition_image_layout(VkCommandBuffer cb, VkImage im, VkFormat
 }
 
 void VulkanApp::cleanup() {
+  // Always run in both modes. Stop and reap the CPU render thread
+  // before tearing down anything it might still be touching.
   should_stop_render_ = true;
   if (cpu_render_thread_.joinable()) cpu_render_thread_.join();
+
+  // CUDA interop state is owned in both modes (headless cudaMallocs its own
+  // frame buffer), and is a no-op when no external memory was imported.
+  cleanup_cuda_interop();
+
+  // Everything below only exists if init_vulkan() ran.
+  if (headless_) return;
+
+  if (device_) vkDeviceWaitIdle(device_);
+
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
-  for (int i = 0; i < kMaxFramesInFlight; i++) {
-    if (render_finished_semaphores_[i]) vkDestroySemaphore(device_, render_finished_semaphores_[i], nullptr);
-    if (image_available_semaphores_[i]) vkDestroySemaphore(device_, image_available_semaphores_[i], nullptr);
-    if (in_flight_fences_[i]) vkDestroyFence(device_, in_flight_fences_[i], nullptr);
+
+  // Size-driven, not kMaxFramesInFlight-driven. The count is a  property of the
+  // containers, not a compile-time constant that may not have been applied yet
+  for (size_t i{0}; i < render_finished_semaphores_.size(); ++i) {
+    vkDestroySemaphore(device_, render_finished_semaphores_[i], nullptr);
   }
+  for (size_t i{0}; i < image_available_semaphores_.size(); ++i) {
+    vkDestroySemaphore(device_, image_available_semaphores_[i], nullptr);
+  }
+  for (size_t i{0}; i < in_flight_fences_.size(); ++i) { vkDestroyFence(device_, in_flight_fences_[i], nullptr); }
+
   if (command_pool_) vkDestroyCommandPool(device_, command_pool_, nullptr);
   for (auto f : framebuffers_) vkDestroyFramebuffer(device_, f, nullptr);
   if (graphics_pipeline_) vkDestroyPipeline(device_, graphics_pipeline_, nullptr);
@@ -758,6 +780,12 @@ void VulkanApp::cleanup() {
 void VulkanApp::setup_world() {
   using std::make_shared;
   world_.clear();
+
+  // Fixed seed per build so scene geometry is identical regardless of how many
+  // scenes were built before this one. Several scenes place objects with
+  // random_double(), and without this a second build of the same scene would
+  // continue the sequence and produce different geometry.
+  seed_scene_rng(1984u);
 
   // Reset camera defaults
   camera_pos_[0] = 13.0f;

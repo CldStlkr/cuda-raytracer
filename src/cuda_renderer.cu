@@ -118,15 +118,35 @@ __device__ float perlin_turb(const point3_gpu& p, const PerlinDataGPU& pdata, in
   return fabsf(accum);
 }
 
-__device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, const point3_gpu& p,
-                                      const cuda::span<PerlinDataGPU> perlin, cuda::span<unsigned char> image_data) {
+__device__ vec3_gpu get_texture_color(cuda::span<TextureGPU> textures, int tex_id, float u, float v,
+                                      const point3_gpu& p, const cuda::span<PerlinDataGPU> perlin,
+                                      cuda::span<unsigned char> image_data) {
+  // get_or_add_texture() returns -1 for a null texture pointer, so this index
+  // is not guaranteed in range. Magenta is a loud sentinel, not a fallback.
+  if (tex_id < 0 || tex_id >= int(textures.size())) return vec3_gpu(1.0f, 0.0f, 1.0f);
+  const TextureGPU& tex = textures[tex_id];
+
   if (tex.type == TextureType::SOLID) {
     return tex.solid.color;
+
   } else if (tex.type == TextureType::CHECKER) {
+    // Integer lattice must match checker_texture::value() in inc/texture.hpp.
+    // Note (x+y+z) % 2 == 0 is sign-safe; comparing against 1 would not be,
+    // since C++ integer division truncates toward zero.
     int x = int(floorf(tex.checker.inv_scale * p.x()));
     int y = int(floorf(tex.checker.inv_scale * p.y()));
     int z = int(floorf(tex.checker.inv_scale * p.z()));
-    return ((x + y + z) % 2 == 0) ? vec3_gpu(0.2, 0.3, 0.1) : vec3_gpu(0.9, 0.9, 0.9);
+    bool is_even = (x + y + z) % 2 == 0;
+    int child = is_even ? tex.checker.even_tex_idx : tex.checker.odd_tex_idx;
+
+    // The host only builds checkers over solid_color children, so a
+    // single-level lookup suffices; recursing here would need a bounded
+    // device stack for no present benefit. Flag anything else loudly.
+    if (child < 0 || child >= int(textures.size())) return vec3_gpu(1.0f, 0.0f, 1.0f);
+    const TextureGPU& c = textures[child];
+    if (c.type != TextureType::SOLID) return vec3_gpu(1.0f, 0.0f, 1.0f);
+    return c.solid.color;
+
   } else if (tex.type == TextureType::IMAGE) {
     u = fminf(fmaxf(u, 0.0f), 1.0f);
     v = 1.0f - fminf(fmaxf(v, 0.0f), 1.0f);
@@ -138,6 +158,7 @@ __device__ vec3_gpu get_texture_color(const TextureGPU& tex, float u, float v, c
     float g = image_data[tex.image.offset + 3 * (i + j * tex.image.width) + 1] / 255.0f;
     float b = image_data[tex.image.offset + 3 * (i + j * tex.image.width) + 2] / 255.0f;
     return vec3_gpu(r, g, b);
+
   } else if (tex.type == TextureType::NOISE) {
     return vec3_gpu(1, 1, 1) * 0.5f *
            (1.0f + sinf(tex.noise.scale * p.z() + 10.0f * perlin_turb(p, perlin[tex.noise.perlin_data_idx], 7)));
@@ -172,7 +193,7 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int num_acti
 
   if (mat.type == MaterialType::DIFFUSE_LIGHT) {
     vec3_gpu contrib =
-        paths.attenuation[idx] * get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+        paths.attenuation[idx] * get_texture_color(textures, mat.albedo_tex_id, rec_u, rec_v, rec_p, perlin, images);
     int pix = paths.pixel_index[idx];
     atomicAdd(&accum_buffer[pix].e[0], contrib.x());
     atomicAdd(&accum_buffer[pix].e[1], contrib.y());
@@ -190,13 +211,13 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int num_acti
     vec3_gpu scatter_dir = rec_normal + random_unit_vector(rng);
     if (scatter_dir.length_squared() < 1e-8f) scatter_dir = rec_normal;
     scattered = ray_gpu(rec_p, scatter_dir, paths.ray_time[idx]);
-    attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    attenuation = get_texture_color(textures, mat.albedo_tex_id, rec_u, rec_v, rec_p, perlin, images);
     is_scattered = true;
 
   } else if (mat.type == MaterialType::METAL) {
     vec3_gpu reflected = reflect(unit_vector(paths.ray_dir[idx]), rec_normal);
     scattered = ray_gpu(rec_p, reflected + mat.fuzz * random_unit_vector(rng), paths.ray_time[idx]);
-    attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    attenuation = get_texture_color(textures, mat.albedo_tex_id, rec_u, rec_v, rec_p, perlin, images);
     is_scattered = (dot(scattered.direction(), rec_normal) > 0);
 
   } else if (mat.type == MaterialType::DIELECTRIC) {
@@ -204,10 +225,16 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int num_acti
     float refraction_ratio = rec_front_face ? (1.0f / mat.ref_idx) : mat.ref_idx;
     vec3_gpu unit_direction = unit_vector(paths.ray_dir[idx]);
     float cos_theta = fminf(dot(-unit_direction, rec_normal), 1.0f);
-    float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
+    // (1-c)(1+c) has no a*b+c pattern, so host and device agree bit-for-bit;
+    // 1-c*c gets contracted to an FMA by nvcc but not by gcc. No effect on the
+    // TIR test below, which sits at c~0.745 where 1-c*c doesn't cancel.
+    float sin_theta = sqrtf(fmaxf(0.0f, (1.0f - cos_theta) * (1.0f + cos_theta)));
     bool cannot_refract = refraction_ratio * sin_theta > 1.0f;
     vec3_gpu direction;
-    if (cannot_refract || reflectance(cos_theta, refraction_ratio) > rng.next_f())
+    // Drawn unconditionally so the per-material draw count depends only on
+    // material type. Mirrors dielectric::scatter in inc/material.hpp.
+    float xi = rng.next_f(); // 1 draw, always
+    if (cannot_refract || reflectance(cos_theta, refraction_ratio) > xi)
       direction = reflect(unit_direction, rec_normal);
     else direction = refract(unit_direction, rec_normal, refraction_ratio);
     scattered = ray_gpu(rec_p, direction, paths.ray_time[idx]);
@@ -215,7 +242,7 @@ __global__ void shade_kernel(PathStateSOA paths, HitResultSOA hits, int num_acti
 
   } else if (mat.type == MaterialType::ISOTROPIC) {
     scattered = ray_gpu(rec_p, random_unit_vector(rng), paths.ray_time[idx]);
-    attenuation = get_texture_color(textures[mat.albedo_tex_id], rec_u, rec_v, rec_p, perlin, images);
+    attenuation = get_texture_color(textures, mat.albedo_tex_id, rec_u, rec_v, rec_p, perlin, images);
     is_scattered = true;
   }
 
@@ -363,6 +390,8 @@ extern "C" void launch_render(RenderConfig config, cuda::span<LinearBVHNode> h_b
   cam.defocus_angle = config.defocus_angle;
   cam.focus_dist = config.focus_dist;
   cam.background = config.background;
+  cam.time0 = config.time0;
+  cam.time1 = config.time1;
   cam.initialize();
 
   static vec3_gpu* d_accum = nullptr;

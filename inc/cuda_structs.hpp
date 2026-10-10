@@ -174,6 +174,12 @@ struct RenderConfig {
   vec3_gpu lookat;
   vec3_gpu vup;
   float vfov;
+  // Shutter interval must match the host reference renderer's interval
+  // exactly, or a differential validation measures motion blur instead of
+  // precision. the host camera draws random_double() in [0,1), and
+  // sphere(c1,c2, ...) interpolates center over t in [0,1].
+  float time0 = 0.0f;
+  float time1 = 1.0f;
   float defocus_angle;
   float focus_dist;
 };

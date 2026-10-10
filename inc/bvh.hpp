@@ -11,10 +11,10 @@ public:
 
   bvh_node(std::vector<shared_ptr<hittable>>& objects, size_t start, size_t end);
 
-  bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
+  bool hit(const ray& r, interval ray_t, hit_record& rec, RNG& rng) const override {
     if (!bbox_.hit(r, ray_t)) return false;
-    bool hit_left = left_->hit(r, ray_t, rec);
-    bool hit_right = right_->hit(r, interval(ray_t.min, hit_left ? rec.t : ray_t.max), rec);
+    bool hit_left = left_->hit(r, ray_t, rec, rng);
+    bool hit_right = right_->hit(r, interval(ray_t.min, hit_left ? rec.t : ray_t.max), rec, rng);
     return hit_left || hit_right;
   }
 
