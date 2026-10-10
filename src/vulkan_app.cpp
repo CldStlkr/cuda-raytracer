@@ -287,13 +287,9 @@ void VulkanApp::draw_frame() {
     float p = render_progress_.load();
     ImGui::Text("Rendering... (%.1f%%)", p * 100.0f);
     ImGui::ProgressBar(p, ImVec2(-1.0f, 0.0f));
-    if (ImGui::Button("STOP RENDER", ImVec2(-1.0f, 30.0f))) {
-      should_stop_render_ = true;
-    }
+    if (ImGui::Button("STOP RENDER", ImVec2(-1.0f, 30.0f))) { should_stop_render_ = true; }
   } else {
-    if (ImGui::Button("START RENDER", ImVec2(-1.0f, 40.0f))) {
-      trigger_render_ = true;
-    }
+    if (ImGui::Button("START RENDER", ImVec2(-1.0f, 40.0f))) { trigger_render_ = true; }
     if (render_time_ > 0) ImGui::Text("Last Render Time: %.3fs", render_time_);
   }
   ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
@@ -756,7 +752,6 @@ void VulkanApp::cleanup() {
   if (surface_) vkDestroySurfaceKHR(instance_, surface_, nullptr);
   if (instance_) vkDestroyInstance(instance_, nullptr);
   if (window_) glfwDestroyWindow(window_);
-  cleanup_cuda_interop();
   glfwTerminate();
 }
 
@@ -837,7 +832,7 @@ void VulkanApp::setup_world() {
     world_.add(make_shared<sphere>(point3(-4, 1, 0), 1.0, make_shared<lambertian>(color(0.4, 0.2, 0.1))));
     world_.add(make_shared<sphere>(point3(4, 1, 0), 1.0, make_shared<metal>(color(0.7, 0.6, 0.5), 0.0)));
   } else if (scene_type_ == Scenes::CHECKERED) {
-    auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1), color(.9, .9, .9));
+    auto checker = make_shared<checker_texture>(0.32, color(1, 0, 0), color(0, 0, 1));
     world_.add(make_shared<sphere>(point3(0, -10, 0), 10, make_shared<lambertian>(checker)));
     world_.add(make_shared<sphere>(point3(0, 10, 0), 10, make_shared<lambertian>(checker)));
   } else if (scene_type_ == Scenes::EARTH) {
@@ -1046,6 +1041,9 @@ void VulkanApp::setup_world() {
 void VulkanApp::setup_camera() {
   cam_.aspect_ratio = aspect_ratio_;
   cam_.image_width = current_width_;
+  // current_height_ is authoritative: it sizes the interop buffer, the blit
+  // extent and RenderConfig::height. The camera must agree exactly.
+  cam_.image_height_override = current_height_;
   cam_.samples_per_pixel = samples_per_pixel_;
   cam_.max_depth = max_depth_;
   cam_.lookfrom = point3(camera_pos_[0], camera_pos_[1], camera_pos_[2]);

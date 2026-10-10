@@ -49,30 +49,30 @@ private:
   GLFWwindow* window_ = nullptr;
 
   // Vulkan Core
-  VkInstance instance_;
-  VkSurfaceKHR surface_;
+  VkInstance instance_ = VK_NULL_HANDLE;
+  VkSurfaceKHR surface_ = VK_NULL_HANDLE;
   VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
-  VkDevice device_;
-  VkQueue graphics_queue_;
-  VkQueue present_queue_;
+  VkDevice device_ = VK_NULL_HANDLE;
+  VkQueue graphics_queue_ = VK_NULL_HANDLE;
+  VkQueue present_queue_ = VK_NULL_HANDLE;
 
-  VkSwapchainKHR swapchain_;
+  VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
   std::vector<VkImage> swapchain_images_;
   std::vector<VkImageView> swapchain_image_views_;
-  VkFormat swapchain_format_;
-  VkExtent2D swapchain_extent_;
+  VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
+  VkExtent2D swapchain_extent_{};
 
-  VkRenderPass render_pass_;
-  VkDescriptorSetLayout descriptor_set_layout_;
-  VkPipelineLayout pipeline_layout_;
-  VkPipeline graphics_pipeline_;
+  VkRenderPass render_pass_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+  VkPipeline graphics_pipeline_ = VK_NULL_HANDLE;
   std::vector<VkFramebuffer> framebuffers_;
 
-  VkCommandPool command_pool_;
+  VkCommandPool command_pool_ = VK_NULL_HANDLE;
   std::vector<VkCommandBuffer> command_buffers_;
 
-  VkDescriptorPool descriptor_pool_;
-  VkDescriptorSet descriptor_set_;
+  VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet descriptor_set_ = VK_NULL_HANDLE;
 
   // Sync
   std::vector<VkSemaphore> image_available_semaphores_;
