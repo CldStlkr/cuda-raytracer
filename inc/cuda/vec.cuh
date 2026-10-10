@@ -177,6 +177,21 @@ __host__ __device__ inline vec3_gpu refract(const vec3_gpu& uv, const vec3_gpu& 
   return r_out_perp - cos_t * n;
 }
 
+// ACES filmic approximation (Narkowicz). Maps linear HDR radiance to [0,1]
+// display-referred values. Output is still LINEAR -- the swapchain is a *_SRGB
+// format, so the hardware applies the sRGB transfer function on write. Applying
+// gamma here too is the double-encode that washed out the CPU path. One
+// definition, called by finalize() and by the host display path, so the five
+// constants cannot drift between them.
+__host__ __device__ inline vec3_gpu aces_tonemap(vec3_gpu x) {
+  const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+  vec3_gpu num = x * (a * x + b);
+  vec3_gpu den = x * (c * x + d) + e;
+  vec3_gpu res = num / den;
+  return vec3_gpu(fmaxf(0.0f, fminf(1.0f, res.x())), fmaxf(0.0f, fminf(1.0f, res.y())),
+                  fmaxf(0.0f, fminf(1.0f, res.z())));
+}
+
 __host__ __device__ inline float reflectance(float cosine, float ref_idx) {
   float r0 = (1.0f - ref_idx) / (1.0f + ref_idx);
   r0 = r0 * r0;

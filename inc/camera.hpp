@@ -42,9 +42,12 @@ public:
   bool enable_reflections = true;
   bool enable_refractions = true;
 
-  // Render to buffer with progress tracking and real-time updates
+  // Renders into a LINEAR HDR buffer: 3 floats per pixel, unclamped, no tone
+  // mapping and no gamma. This is the float64 reference image the validation
+  // harness compares against d_accum/spp from the device; display-referred
+  // conversion (ACES, then the swapchain's sRGB encode) happens downstream.
   void render_to_buffer_with_progress(const hittable& world,
-                                      std::vector<unsigned char>& buffer,
+                                      std::vector<float>& buffer,
                                       std::mutex& buffer_mutex,
                                       std::atomic<float>& progress,
                                       const std::atomic<bool>& should_stop,
@@ -54,8 +57,8 @@ public:
     // Ensure buffer is properly sized
     {
       std::lock_guard<std::mutex> lock(buffer_mutex);
-      buffer.resize(image_width * image_height * 3);
-      std::fill(buffer.begin(), buffer.end(), 0); // Clear to black
+      buffer.resize(size_t(image_width) * image_height * 3);
+      std::fill(buffer.begin(), buffer.end(), 0.0f); // Clear to black
     }
 
     int total_pixels = image_width * image_height;
@@ -72,7 +75,7 @@ public:
     std::vector<std::thread> threads;
 
     auto worker = [&]() {
-      std::vector<unsigned char> scanline_buffer(image_width * 3);
+      std::vector<float> scanline_buffer(size_t(image_width) * 3);
       while (!should_stop.load()) {
         int j = current_line.fetch_add(1);
         if (j >= image_height) break;
@@ -97,17 +100,13 @@ public:
           double scale = 1.0 / sample_count;
           pixel_color *= scale;
 
-          auto r_val = linear_to_gamma(pixel_color.x());
-          auto g_val = linear_to_gamma(pixel_color.y());
-          auto b_val = linear_to_gamma(pixel_color.z());
-
-          static const interval intensity(0.000, 0.999);
-          scanline_buffer[i * 3] =
-              static_cast<unsigned char>(256 * intensity.clamp(r_val));
-          scanline_buffer[i * 3 + 1] =
-              static_cast<unsigned char>(256 * intensity.clamp(g_val));
-          scanline_buffer[i * 3 + 2] =
-              static_cast<unsigned char>(256 * intensity.clamp(b_val));
+          // Linear radiance, unclamped and ungamma'd. Narrowing f64 -> f32 here
+          // is the only precision loss between the reference and what the
+          // harness compares, and it is below the f32 epsilon of the device
+          // values it is compared against.
+          scanline_buffer[i * 3 + 0] = static_cast<float>(pixel_color.x());
+          scanline_buffer[i * 3 + 1] = static_cast<float>(pixel_color.y());
+          scanline_buffer[i * 3 + 2] = static_cast<float>(pixel_color.z());
           row_completed_pixels++;
         }
 
@@ -168,8 +167,7 @@ public:
   }
 
   // Original render method for compatibility
-  void render_to_buffer(const hittable& world,
-                        std::vector<unsigned char>& buffer) {
+  void render_to_buffer(const hittable& world, std::vector<float>& buffer) {
     std::mutex dummy_mutex;
     std::atomic<float> dummy_progress{0.0f};
     std::atomic<bool> dummy_stop{false};

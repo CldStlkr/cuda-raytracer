@@ -36,15 +36,67 @@ struct SwapchainSupportDetails {
 
 enum class Scenes { STATIC, MOTION, CHECKERED, EARTH, PERLIN, QUAD, LIGHT, CORNELL, SMOKE, FINAL, CUSTOM };
 
+// Single source of truth for CLI scene names, so --scene and any future scene
+// listing cannot disagree about what exists.
+struct SceneName {
+  const char* name;
+  Scenes scene;
+};
+inline constexpr SceneName kSceneNames[] = {
+    {"static", Scenes::STATIC},    {"motion", Scenes::MOTION}, {"checkered", Scenes::CHECKERED},
+    {"earth", Scenes::EARTH},      {"perlin", Scenes::PERLIN}, {"quad", Scenes::QUAD},
+    {"light", Scenes::LIGHT},      {"cornell", Scenes::CORNELL}, {"smoke", Scenes::SMOKE},
+    {"final", Scenes::FINAL},      {"custom", Scenes::CUSTOM},
+};
+
+inline bool scene_from_name(const std::string& s, Scenes& out) {
+  for (const auto& e : kSceneNames)
+    if (s == e.name) {
+      out = e.scene;
+      return true;
+    }
+  return false;
+}
+
+inline const char* name_from_scene(Scenes s) {
+  for (const auto& e : kSceneNames)
+    if (e.scene == s) return e.name;
+  return "?";
+}
+
+inline std::string scene_name_list() {
+  std::string r;
+  for (const auto& e : kSceneNames) {
+    if (!r.empty()) r += ", ";
+    r += e.name;
+  }
+  return r;
+}
+
+// Headless render parameters. Also seeds the GUI's initial values so both
+// entry points honour the same flags.
+struct HeadlessOptions {
+  enum class Backend { GPU, CPU, BOTH };
+
+  bool enabled = false;
+  Scenes scene = Scenes::STATIC;
+  int width = 800;
+  int spp = 10;
+  int max_depth = 10;
+  Backend backend = Backend::GPU;
+  std::string out = "render"; // "<out>_gpu.ppm" / "<out>_cpu.ppm"
+};
+
 class VulkanApp {
 public:
-  VulkanApp(bool headless = false);
+  explicit VulkanApp(const HeadlessOptions& opts = {});
   ~VulkanApp();
 
   void run();
   void run_headless();
 
 private:
+  HeadlessOptions opts_;
   bool headless_;
   GLFWwindow* window_ = nullptr;
 
@@ -116,7 +168,9 @@ private:
   std::vector<unsigned char> gpu_image_buffer_;
 
   // CPU Render Bridge
-  std::vector<unsigned char> cpu_render_buffer_;
+  // Linear HDR, 3 floats/pixel. Pre-tonemap and pre-gamma: this is the float64
+  // reference image the validation harness compares against the device.
+  std::vector<float> cpu_render_buffer_;
   std::mutex cpu_buffer_mutex_;
   std::thread cpu_render_thread_;
 
@@ -178,7 +232,8 @@ private:
                                                        void* pUserData);
   void setup_debug_messenger();
   bool check_validation_layer_support();
-  void export_ppm();
+  void export_gpu_ppm(const std::string& path);
+  void export_cpu_ppm(const std::string& path);
 };
 
 #endif

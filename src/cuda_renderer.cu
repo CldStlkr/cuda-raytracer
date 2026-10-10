@@ -148,20 +148,31 @@ __device__ vec3_gpu get_texture_color(cuda::span<TextureGPU> textures, int tex_i
     return c.solid.color;
 
   } else if (tex.type == TextureType::IMAGE) {
+    // rtw_image::width()/height() return 0 when the file failed to load, which
+    // made the clamps below compute i = width - 1 = -1 and index the image
+    // buffer at -3 -- an illegal device access on a span that is also empty.
+    // Flag it loudly instead; a missing asset is a scene error, not a pixel.
+    if (tex.image.width <= 0 || tex.image.height <= 0) return vec3_gpu(1.0f, 0.0f, 1.0f);
+
     u = fminf(fmaxf(u, 0.0f), 1.0f);
     v = 1.0f - fminf(fmaxf(v, 0.0f), 1.0f);
-    int i = int(u * tex.image.width);
-    int j = int(v * tex.image.height);
-    if (i >= tex.image.width) i = tex.image.width - 1;
-    if (j >= tex.image.height) j = tex.image.height - 1;
-    float r = image_data[tex.image.offset + 3 * (i + j * tex.image.width)] / 255.0f;
-    float g = image_data[tex.image.offset + 3 * (i + j * tex.image.width) + 1] / 255.0f;
-    float b = image_data[tex.image.offset + 3 * (i + j * tex.image.width) + 2] / 255.0f;
+    int i = min(int(u * tex.image.width), tex.image.width - 1);
+    int j = min(int(v * tex.image.height), tex.image.height - 1);
+    size_t base = size_t(tex.image.offset) + 3 * (size_t(i) + size_t(j) * tex.image.width);
+    if (base + 2 >= image_data.size()) return vec3_gpu(1.0f, 0.0f, 1.0f);
+
+    float r = image_data[base] / 255.0f;
+    float g = image_data[base + 1] / 255.0f;
+    float b = image_data[base + 2] / 255.0f;
     return vec3_gpu(r, g, b);
 
   } else if (tex.type == TextureType::NOISE) {
+    // turb() takes the SCALED point: noise_texture::value in inc/texture.hpp
+    // passes p * scale. Passing p unscaled sampled the field at 1/scale the
+    // frequency, giving an unrelated pattern.
+    float s = tex.noise.scale;
     return vec3_gpu(1, 1, 1) * 0.5f *
-           (1.0f + sinf(tex.noise.scale * p.z() + 10.0f * perlin_turb(p, perlin[tex.noise.perlin_data_idx], 7)));
+           (1.0f + sinf(s * p.z() + 10.0f * perlin_turb(s * p, perlin[tex.noise.perlin_data_idx], 7)));
   }
   return vec3_gpu(0, 0, 0);
 }
@@ -269,15 +280,6 @@ __global__ void compact_paths(PathStateSOA src, PathStateSOA dst, int* scatter_i
   dst.pixel_index[d] = src.pixel_index[idx];
   dst.sample_index[d] = src.sample_index[idx];
   dst.depth[d] = src.depth[idx];
-}
-
-__device__ vec3_gpu aces_tonemap(vec3_gpu x) {
-  float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
-  vec3_gpu num = x * (a * x + b);
-  vec3_gpu den = x * (c * x + d) + e;
-  vec3_gpu res = num / den;
-  return vec3_gpu(fmaxf(0.0f, fminf(1.0f, res.x())), fmaxf(0.0f, fminf(1.0f, res.y())),
-                  fmaxf(0.0f, fminf(1.0f, res.z())));
 }
 
 __global__ void finalize(float4* frame_buffer, vec3_gpu* accum_buffer, int total_pixels, int total_samples) {

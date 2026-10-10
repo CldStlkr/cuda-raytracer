@@ -48,12 +48,28 @@ uint32_t VulkanApp::find_memory_type(uint32_t typeFilter, VkMemoryPropertyFlags 
   throw std::runtime_error("failed to find suitable memory type!");
 }
 
-VulkanApp::VulkanApp(bool headless) : headless_(headless) {
+VulkanApp::VulkanApp(const HeadlessOptions& opts) : opts_(opts), headless_(opts.enabled) {
+  // Apply CLI parameters before setup_world(), which reads scene_type_ and
+  // overwrites aspect_ratio_ and the camera defaults per scene.
+  scene_type_ = opts_.scene;
+  samples_per_pixel_ = opts_.spp;
+  max_depth_ = opts_.max_depth;
+  image_width_ = opts_.width;
+
+  // Scene first: it establishes aspect_ratio_. Needs no Vulkan state.
+  setup_world();
+
+  // Then the resolution, because init_vulkan() sizes the interop image and
+  // buffer from these. current_height_ stays the one authoritative height
+  // (see camera::image_height_override).
+  current_width_ = opts_.width;
+  current_height_ = std::max(1, (int)(current_width_ / aspect_ratio_));
+
   if (!headless_) {
     init_window();
     init_vulkan();
   }
-  setup_world();
+
   setup_camera();
 }
 
@@ -222,9 +238,14 @@ void VulkanApp::draw_frame() {
       std::lock_guard<std::mutex> lock(cpu_buffer_mutex_);
       if (cpu_render_buffer_.size() >= (size_t)current_width_ * current_height_ * 3) {
         for (int i = 0; i < current_width_ * current_height_; i++) {
-          float_buffer[i * 4 + 0] = cpu_render_buffer_[i * 3 + 0] / 255.0f;
-          float_buffer[i * 4 + 1] = cpu_render_buffer_[i * 3 + 1] / 255.0f;
-          float_buffer[i * 4 + 2] = cpu_render_buffer_[i * 3 + 2] / 255.0f;
+          // Same curve finalize() applies to the device accumulator, from the
+          // same definition. Output stays linear; the *_SRGB swapchain encodes.
+          vec3_gpu c = aces_tonemap(vec3_gpu(cpu_render_buffer_[i * 3 + 0],
+                                             cpu_render_buffer_[i * 3 + 1],
+                                             cpu_render_buffer_[i * 3 + 2]));
+          float_buffer[i * 4 + 0] = c.x();
+          float_buffer[i * 4 + 1] = c.y();
+          float_buffer[i * 4 + 2] = c.z();
           float_buffer[i * 4 + 3] = 1.0f;
         }
       }
@@ -1163,34 +1184,82 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanApp::debug_callback(VkDebugUtilsMessageSeve
   return VK_FALSE;
 }
 void VulkanApp::setup_debug_messenger() {}
-void VulkanApp::export_ppm() {
-  int width = current_width_;
-  int height = current_height_;
-  std::vector<float4> host_buffer(width * height);
+// sRGB OETF. The GUI relies on the *_SRGB swapchain to apply this in hardware;
+// a PPM file has no such stage, so it must be encoded here or the image reads
+// far too dark.
+static inline int to_srgb_byte(float linear) {
+  double c = std::clamp(double(linear), 0.0, 1.0);
+  double v = (c <= 0.0031308) ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055;
+  return int(std::lround(std::clamp(v, 0.0, 1.0) * 255.0));
+}
 
-  // If we are in headless mode, cuda_interop_pointer_ was allocated via cudaMalloc
-  // If we are in GUI mode, it was mapped from Vulkan
-  cudaMemcpy(host_buffer.data(), cuda_interop_pointer_, width * height * sizeof(float4), cudaMemcpyDeviceToHost);
-
-  std::ofstream ofs("output.ppm");
+static void write_ppm(const std::string& path, int width, int height,
+                      const std::function<vec3_gpu(int, int)>& fetch_linear) {
+  std::ofstream ofs(path);
+  if (!ofs) {
+    std::cerr << "Failed to open " << path << " for writing" << std::endl;
+    return;
+  }
   ofs << "P3\n" << width << " " << height << "\n255\n";
   for (int j = 0; j < height; ++j) {
     for (int i = 0; i < width; ++i) {
-      float4 pixel = host_buffer[j * width + i];
-      int r = int(255.999 * std::clamp(pixel.x, 0.0f, 1.0f));
-      int g = int(255.999 * std::clamp(pixel.y, 0.0f, 1.0f));
-      int b = int(255.999 * std::clamp(pixel.z, 0.0f, 1.0f));
-      ofs << r << " " << g << " " << b << "\n";
+      vec3_gpu c = fetch_linear(i, j);
+      ofs << to_srgb_byte(c.x()) << ' ' << to_srgb_byte(c.y()) << ' ' << to_srgb_byte(c.z()) << '\n';
     }
   }
-  std::cout << "Render saved to output.ppm" << std::endl;
+  std::cout << "  wrote " << path << std::endl;
+}
+
+void VulkanApp::export_gpu_ppm(const std::string& path) {
+  int width = current_width_, height = current_height_;
+  std::vector<float4> host_buffer(size_t(width) * height);
+  // Headless cudaMalloc'd this; GUI mapped it from Vulkan. Either way finalize()
+  // already applied ACES, so only the sRGB encode remains.
+  cudaMemcpy(host_buffer.data(), cuda_interop_pointer_, host_buffer.size() * sizeof(float4),
+             cudaMemcpyDeviceToHost);
+  write_ppm(path, width, height, [&](int i, int j) {
+    const float4& p = host_buffer[size_t(j) * width + i];
+    return vec3_gpu(p.x, p.y, p.z);
+  });
+}
+
+void VulkanApp::export_cpu_ppm(const std::string& path) {
+  int width = current_width_, height = current_height_;
+  if (cpu_render_buffer_.size() < size_t(width) * height * 3) {
+    std::cerr << "CPU buffer too small to export (" << cpu_render_buffer_.size() << ")" << std::endl;
+    return;
+  }
+  // cpu_render_buffer_ is raw linear HDR, so ACES is applied here -- the same
+  // definition finalize() uses on the device accumulator.
+  write_ppm(path, width, height, [&](int i, int j) {
+    size_t k = (size_t(j) * width + i) * 3;
+    return aces_tonemap(vec3_gpu(cpu_render_buffer_[k], cpu_render_buffer_[k + 1], cpu_render_buffer_[k + 2]));
+  });
 }
 
 void VulkanApp::run_headless() {
-  std::cout << "Starting headless render (" << current_width_ << "x" << current_height_ << ")..." << std::endl;
+  const bool want_gpu = opts_.backend != HeadlessOptions::Backend::CPU;
+  const bool want_cpu = opts_.backend != HeadlessOptions::Backend::GPU;
+
+  std::cout << "scene=" << name_from_scene(scene_type_) << " " << current_width_ << "x" << current_height_
+            << " spp=" << samples_per_pixel_ << " depth=" << max_depth_
+            << " primitives=" << gpu_primitives_.size() << " bvh_nodes=" << gpu_bvh_nodes_.size() << std::endl;
+
+  if (want_cpu) {
+    std::cout << "[cpu] rendering (float64 reference)..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+    cam_.render_to_buffer(world_, cpu_render_buffer_);
+    double secs = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
+    std::cout << "[cpu] " << secs << "s" << std::endl;
+    export_cpu_ppm(opts_.out + "_cpu.ppm");
+  }
+
+  if (!want_gpu) return;
+
+  std::cout << "[gpu] rendering (float32)..." << std::endl;
 
   // Manual CUDA allocation since we skip Vulkan interop in headless mode
-  size_t buffer_size = current_width_ * current_height_ * sizeof(float4);
+  size_t buffer_size = size_t(current_width_) * current_height_ * sizeof(float4);
   cudaMalloc(&cuda_interop_pointer_, buffer_size);
 
   RenderConfig config;
@@ -1219,12 +1288,12 @@ void VulkanApp::run_headless() {
   launch_render(config, bvh, p_buf, m_buf, t_buf, per_buf, i_buf);
   cudaDeviceSynchronize();
 
-  auto end = std::chrono::high_resolution_clock::now();
-  float duration = std::chrono::duration<float>(end - start).count();
-  std::cout << "Render completed in " << duration << "s" << std::endl;
+  double secs = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
+  std::cout << "[gpu] " << secs << "s" << std::endl;
 
-  export_ppm();
+  export_gpu_ppm(opts_.out + "_gpu.ppm");
 
   cudaFree(cuda_interop_pointer_);
+  cuda_interop_pointer_ = nullptr;
 }
 bool VulkanApp::check_validation_layer_support() { return true; }

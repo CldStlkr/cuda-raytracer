@@ -3,7 +3,38 @@
 #include "material.hpp"
 #include "texture.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 static inline vec3_gpu to_gpu(const vec3& v) { return vec3_gpu(float(v.x()), float(v.y()), float(v.z())); }
+
+// Pads a zero-thickness AABB so f32 traversal can still intersect it.
+//
+// The pad must be RELATIVE to the coordinate magnitude. A fixed 1e-4 is under
+// two ulps of f32 at the Cornell scene's 555-unit scale, so aabb_hit_tmin()
+// computed t_max == t_min for axis-aligned quads and culled them by their own
+// bounding box -- the device rendered those walls black while the f64 host path
+// (which does no AABB culling at the hittable_list level) rendered them lit.
+// That was a 37% energy loss on the only scene with coordinates above ~20.
+static void pad_degenerate_aabb(aabb& box) {
+  const double extent = std::max({std::fabs(box.x.min), std::fabs(box.x.max), std::fabs(box.y.min),
+                                  std::fabs(box.y.max), std::fabs(box.z.min), std::fabs(box.z.max), 1.0});
+  if (!std::isfinite(extent)) return; // unbounded/empty box: nothing to pad against
+  const double delta = 1e-4 * extent; // ~840x f32 epsilon, so always several ulps wide
+
+  if (box.x.max - box.x.min < delta) {
+    box.x.min -= delta / 2.0;
+    box.x.max += delta / 2.0;
+  }
+  if (box.y.max - box.y.min < delta) {
+    box.y.min -= delta / 2.0;
+    box.y.max += delta / 2.0;
+  }
+  if (box.z.max - box.z.min < delta) {
+    box.z.min -= delta / 2.0;
+    box.z.max += delta / 2.0;
+  }
+}
 
 // Define CumTransform locally
 struct CumTransform {
@@ -212,19 +243,7 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
                                   linear_perlin, image_buffer, mat_map, tex_map, current_trans);
 
     aabb box = current_trans.transform_bbox(bvh->bounding_box());
-    double delta = 0.0001;
-    if (box.x.max - box.x.min < delta) {
-      box.x.min -= delta / 2.0;
-      box.x.max += delta / 2.0;
-    }
-    if (box.y.max - box.y.min < delta) {
-      box.y.min -= delta / 2.0;
-      box.y.max += delta / 2.0;
-    }
-    if (box.z.max - box.z.min < delta) {
-      box.z.min -= delta / 2.0;
-      box.z.max += delta / 2.0;
-    }
+    pad_degenerate_aabb(box);
     linear_nodes[curr_idx].aabb_min = vec3_gpu(float(box.x.min), float(box.y.min), float(box.z.min));
     linear_nodes[curr_idx].aabb_max = vec3_gpu(float(box.x.max), float(box.y.max), float(box.z.max));
     linear_nodes[curr_idx].n_primitives = 0;
@@ -359,19 +378,7 @@ int flatten_hittable_internal(std::shared_ptr<hittable> node, std::vector<Linear
     aabb box = current_trans.transform_bbox(node->bounding_box());
 
     // Pad zero-thickness AABBs to prevent GPU traversal misses
-    double delta = 0.0001;
-    if (box.x.max - box.x.min < delta) {
-      box.x.min -= delta / 2.0;
-      box.x.max += delta / 2.0;
-    }
-    if (box.y.max - box.y.min < delta) {
-      box.y.min -= delta / 2.0;
-      box.y.max += delta / 2.0;
-    }
-    if (box.z.max - box.z.min < delta) {
-      box.z.min -= delta / 2.0;
-      box.z.max += delta / 2.0;
-    }
+    pad_degenerate_aabb(box);
 
     linear_nodes[curr_idx].aabb_min = to_gpu(vec3{box.x.min, box.y.min, box.z.min});
     linear_nodes[curr_idx].aabb_max = to_gpu(vec3{box.x.max, box.y.max, box.z.max});
