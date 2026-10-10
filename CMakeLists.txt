@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 project(ray_gui LANGUAGES C CXX CUDA)
+# CMake always creats CMAKE_BUILD_TYPE as an empty cache entry,
+# so a plain set (... CACHE STRING ...) silently does nothing. FORCE is required
+# to seed default. Without this, 'cmake ..' yields no optimization flags at all.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "BUILD type" FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+    Debug Release RelWithDebInfo MinSizeRel)
+endif()
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_ARCHITECTURES 75)
@@ -88,8 +98,6 @@ target_link_libraries(main PRIVATE
     glfw
     Vulkan::Vulkan
     CUDA::cudart
-    CUDA::cuda_driver
-    CUDA::curand
 )
 if(MSVC)
     target_compile_options(main PRIVATE /W4)
